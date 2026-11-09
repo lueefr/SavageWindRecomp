@@ -75,6 +75,31 @@ def portable_env(root, base=None):
     return env
 
 
+def cpu_target():
+    # Upstream generates a different library ID for the compatible and fast x86-64 targets.
+    # Inspect capabilities, not CPU model names, so changing computers is inexpensive to detect.
+    arch = platform.machine().lower()
+    forced = os.environ.get("SAVAGEWIND_COMPAT_CPU")
+    if forced and forced != "0":
+        return arch + ":compatible"
+    if arch not in ("x86_64", "amd64"):
+        return arch + ":native"
+    try:
+        with open("/proc/cpuinfo", encoding="ascii", errors="replace") as cpu:
+            for line in cpu:
+                if line.startswith("flags") and ":" in line:
+                    flags = set(line.partition(":")[2].split())
+                    if {"avx2", "fma", "bmi2"} <= flags:
+                        return "x86-64-v3"
+                    if {"sse4_2", "popcnt"} <= flags:
+                        return "x86-64-v2"
+                    return "x86-64-unsupported"
+    except OSError:
+        pass
+    # Do not guess CPU features if /proc is unavailable.
+    return arch + ":unknown"
+
+
 def valid_game(folder):
     folder = Path(folder)
     return (not folder.is_symlink()
@@ -645,11 +670,20 @@ class Pipeline:
                     return "setup"
             # A rebuild is mandatory only after changing the executable or importing new game files.
             key = state.get("built_digest")
-            if (key != state.get("official_digest") or
+            target = cpu_target()
+            cpu_changed = bool(state.get("built_cpu") and state["built_cpu"] != target)
+            if (key != state.get("official_digest") or cpu_changed or
                     not (root / "extracted/swgame.so").is_file() or
                     not (root / "extracted/swgame.so.id").is_file()):
+                if cpu_changed:
+                    self.status("stage", "CPU diferente detectada; preparando código nativo compatível...")
                 build_game(root, installed, self.status, self.cancel)
                 state["built_digest"] = state.get("official_digest")
+                state["built_cpu"] = target
+                write_state(root, state)
+            elif not state.get("built_cpu"):
+                # Adopt a working install without forcing an unnecessary rebuild.
+                state["built_cpu"] = target
                 write_state(root, state)
             self.status("stage", "Iniciando o Savage Wind...")
             with (root / ".sw-wrapper/game.log").open("ab") as logfile:

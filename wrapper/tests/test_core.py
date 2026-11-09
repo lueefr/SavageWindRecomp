@@ -290,6 +290,35 @@ class PortableTests(unittest.TestCase):
             rebuild.assert_not_called()
             self.assertEqual(launch.call_args.args[0][1], "--play")
 
+    def test_cpu_target_respects_compat_override(self):
+        with mock.patch.dict(os.environ, {"SAVAGEWIND_COMPAT_CPU": "1"}):
+            self.assertIn("compatible", core.cpu_target())
+
+    def test_new_cpu_target_rebuilds_portable_game_code(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = game(root)
+            (path / "swgame.so").write_bytes(b"compiled")
+            (path / "swgame.so.id").write_bytes(b"known")
+            binary = root / "SavageWind-official.AppImage"
+            binary.write_bytes(b"stub")
+            digest = "a" * 64
+            core.write_state(root, {
+                "official_digest": digest, "official_size": binary.stat().st_size,
+                "official_mtime_ns": binary.stat().st_mtime_ns,
+                "built_digest": digest, "built_cpu": "x86-64-v2",
+            })
+            with mock.patch.object(core, "cpu_target", return_value="x86-64-v3"):
+                with mock.patch.object(core, "fetch_latest", side_effect=OSError("offline")):
+                    with mock.patch.object(core, "build_game") as rebuild:
+                        with mock.patch.object(core.subprocess, "Popen") as launch:
+                            launch.return_value.pid = 44
+                            result = core.Pipeline(root, lambda *_: None,
+                                                   lambda *_: False, threading.Event()).run()
+            self.assertEqual(result, "launched")
+            rebuild.assert_called_once()
+            self.assertEqual(core.read_state(root)["built_cpu"], "x86-64-v3")
+
     def test_decline_update_preserves_installed_binary(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
