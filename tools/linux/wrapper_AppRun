@@ -2,6 +2,8 @@
 # Portable wrapper: never start upstream without configuring its writable data root.
 set -e
 HERE=$(dirname "$(readlink -f "$0")")
+SAVAGEWIND_WRAPPER_BINDIR="$HERE/usr/bin"
+export SAVAGEWIND_WRAPPER_BINDIR
 DESKTOP=$(printf '%s' "$XDG_CURRENT_DESKTOP" | tr '[:upper:]' '[:lower:]')
 
 # GNOME uses GTK when its GObject bindings are present on the host.

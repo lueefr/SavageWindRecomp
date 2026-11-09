@@ -10,6 +10,7 @@ def main():
     args = argparse.ArgumentParser(description="Savage Wind portable launcher")
     args.add_argument("--root", help="Explicit install folder for development/tests")
     args.add_argument("--selftest", action="store_true", help="Validate Python imports without creating files")
+    args.add_argument("--config", action="store_true", help="Abrir o instalador em vez de iniciar direto")
     opt = args.parse_args()
     try:
         root = portable_root(explicit=opt.root)
@@ -21,9 +22,9 @@ def main():
     try:
         if kde:
             from . import qt_ui
-            return qt_ui.run(root, selftest=opt.selftest)
+            return qt_ui.run(root, selftest=opt.selftest, autoplay=not opt.config)
         from . import gtk_ui
-        return gtk_ui.run(root, selftest=opt.selftest)
+        return gtk_ui.run(root, selftest=opt.selftest, autoplay=not opt.config)
     except ImportError as error:
         library = "PySide6 ou PyQt6" if kde else "PyGObject e GTK 3"
         print(f"A interface nativa requer {library}. Detalhes: {error}", file=sys.stderr)
