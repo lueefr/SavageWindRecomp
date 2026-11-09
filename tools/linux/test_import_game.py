@@ -66,7 +66,8 @@ class ImportTest(unittest.TestCase):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 import_game.materialize(image, work / "expanded")
-            self.assertIn("Extracted 0/1 RomFS files...", output.getvalue())
+            self.assertIn("RomFS file 1/1:", output.getvalue())
+            self.assertIn("Extracted 1 RomFS files.", output.getvalue())
             self.assertIn("RomFS file 1/1: test.txt (5 bytes)", output.getvalue())
 
     def test_missing_inputs(self):
