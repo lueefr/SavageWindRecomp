@@ -111,6 +111,58 @@ class LayoutTests(unittest.TestCase):
             self.assertEqual(env["SAVAGEWIND_GAME_LIB"], str(root / "game/swgame.so"))
             self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"precious save")
 
+    def test_recovers_previously_completed_build_after_old_wrapper_error(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            official = root / "SavageWind-official.AppImage"
+            official.write_bytes(b"official stub")
+            old_files(root)
+            (root / ".sw-wrapper").mkdir()
+            (root / ".sw-wrapper/build.log").write_text(
+                "[gamebuild] generator swgen, compiler zig cc, 4 jobs\\n"
+                "[gamebuild] done in 305s\\n"
+                "[wrapper] failed to find READY\\n"
+            )
+            digest = "f" * 64
+            core.write_state(root, {
+                "official_digest": digest,
+                "official_size": official.stat().st_size,
+                "official_mtime_ns": official.stat().st_mtime_ns,
+            })
+            with mock.patch.object(core, "fetch_latest", side_effect=OSError("offline")):
+                with mock.patch.object(core, "build_game") as rebuild:
+                    with mock.patch.object(core.subprocess, "Popen") as launch:
+                        launch.return_value.pid = 27
+                        answer = core.Pipeline(root, lambda *_: None, lambda *_: False,
+                                               threading.Event()).run()
+            self.assertEqual(answer, "launched")
+            rebuild.assert_not_called()
+            self.assertEqual(core.read_state(root)["built_digest"], digest)
+            self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"precious save")
+
+    def test_unconfirmed_native_code_does_not_skip_compilation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            official = root / "SavageWind-official.AppImage"
+            official.write_bytes(b"official stub")
+            old_files(root)
+            (root / ".sw-wrapper").mkdir()
+            core.write_state(root, {
+                "official_digest": "d" * 64,
+                "official_size": official.stat().st_size,
+                "official_mtime_ns": official.stat().st_mtime_ns,
+            })
+            def rebuild(destination, binary, emit, cancel):
+                self.assertEqual(destination, root)
+            with mock.patch.object(core, "fetch_latest", side_effect=OSError("offline")):
+                with mock.patch.object(core, "build_game", side_effect=rebuild) as called:
+                    with mock.patch.object(core.subprocess, "Popen") as launch:
+                        launch.return_value.pid = 37
+                        answer = core.Pipeline(root, lambda *_: None, lambda *_: False,
+                                               threading.Event()).run()
+            self.assertEqual(answer, "launched")
+            called.assert_called_once()
+
     def test_upstream_migration_uses_new_destinations(self):
         with tempfile.TemporaryDirectory() as folder:
             base = Path(folder)
