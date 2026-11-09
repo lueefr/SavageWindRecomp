@@ -510,6 +510,9 @@ class Pipeline:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 raise InstallError("Já existe uma operação do instalador em andamento.") from error
+            # Hold this lock for the lifetime of the launched game, too.
+            # A second updater must not replace game code while the first game uses it.
+            self._lock_fd = lock.fileno()
             return self._run_locked(source)
 
     def _run_locked(self, source=None):
@@ -586,7 +589,7 @@ class Pipeline:
                 process = subprocess.Popen([str(installed), "--play", str(root / "extracted")],
                                            env=portable_env(root), cwd=root,
                                            start_new_session=True, stdout=subprocess.DEVNULL,
-                                           stderr=logfile)
+                                           stderr=logfile, pass_fds=(self._lock_fd,))
             if rollback:
                 rollback.commit()
             self.status("log", f"Jogo iniciado (PID {process.pid}).")
