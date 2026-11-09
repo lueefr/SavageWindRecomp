@@ -466,6 +466,33 @@ def compiled_code(root, staging=False):
         return False
 
 
+def recover_completed_code(root, installed, state, emit):
+    # Earlier wrappers could report a failed setup even after the upstream
+    # compiler had successfully created the native library. Recover only if
+    # the log confirms completion and the library is newer than this AppImage.
+    if state.get("built_digest") or not state.get("official_digest") or not compiled_code(root):
+        return False
+    lib = game_data(root) / "swgame.so"
+    log = Path(root) / ".sw-wrapper/build.log"
+    try:
+        if lib.stat().st_mtime_ns < Path(installed).stat().st_mtime_ns:
+            return False
+        with log.open("rb") as file:
+            file.seek(0, os.SEEK_END)
+            file.seek(max(0, file.tell() - 65536))
+            tail = file.read()
+    except OSError:
+        return False
+    if b"[gamebuild] done in " not in tail or b"-> NOT READY" in tail:
+        return False
+    state["built_digest"] = state["official_digest"]
+    state["built_cpu"] = cpu_target()
+    write_state(root, state)
+    emit("log", "Compilação anterior recuperada do log oficial; "
+                "reutilizando game/swgame.so sem recompilar.", None)
+    return True
+
+
 def publish_code(root):
     # Both files are on the same filesystem; reject links and incomplete pairs.
     source = game_files(root)
@@ -819,6 +846,7 @@ class Pipeline:
                 else:
                     return "setup"
             # A rebuild is mandatory only after changing the executable or importing new game files.
+            recover_completed_code(root, installed, state, self.status)
             key = state.get("built_digest")
             target = cpu_target()
             cpu_changed = bool(state.get("built_cpu") and state["built_cpu"] != target)
