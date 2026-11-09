@@ -33,6 +33,19 @@ def game(root):
     return path
 
 
+class ImportSnapshotTests(unittest.TestCase):
+    def test_live_snapshot_has_four_lines_and_measured_count(self):
+        with mock.patch.object(core.time, "monotonic", return_value=70):
+            snapshot = core.import_detail("Copiando NCA base", 2 * core.CHUNK,
+                                          10 * core.CHUNK, 0, 1, "arquivo NCA", 10)
+        self.assertEqual(snapshot.splitlines(), [
+            "Copiando NCA base: 20.0%",
+            "NCA base: 20.0% (2 / 10 MiB)",
+            "0 de 1 arquivo NCA",
+            "ETA: 04:00",
+        ])
+
+
 class PortableTests(unittest.TestCase):
     def test_folder_follows_physical_appimage(self):
         with tempfile.TemporaryDirectory() as folder:
