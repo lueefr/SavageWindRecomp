@@ -259,6 +259,62 @@ def download_release(info, root, emit, cancel):
             os.unlink(temp)
 
 
+
+def adopt_release(info, root, emit, cancel):
+    # Check only immediate, common AppImage locations. Never walk the entire home tree.
+    root = Path(root).resolve()
+    directories = (root, Path.home() / "Downloads", Path.home() / "Applications",
+                   Path.home() / "AppImages", Path.home() / "Games", Path.home() / "Jogos")
+    manual = os.environ.get("SAVAGEWIND_UPSTREAM_APPIMAGE")
+    candidates = [Path(manual).expanduser()] if manual else []
+    seen = set()
+    for folder in directories:
+        if not folder.is_dir() or folder.is_symlink():
+            continue
+        try:
+            candidates.extend(p for p in folder.iterdir()
+                              if "savagewind" in p.name.lower().replace("_", "").replace("-", "")
+                              and p.name.lower().endswith(".appimage"))
+        except OSError:
+            continue
+    for candidate in candidates:
+        check_cancel(cancel)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            if (candidate.is_symlink() or not candidate.is_file()
+                    or candidate.resolve() == (root / "SavageWind-official.AppImage").resolve()
+                    or candidate.stat().st_size != info["size"]):
+                continue
+            emit("stage", f"Verificando AppImage oficial local: {candidate.name}", None)
+            if sha256(candidate, cancel) != info["digest"]:
+                continue
+            fd, tmpname = tempfile.mkstemp(prefix=".adopt-", dir=root / ".sw-wrapper")
+            os.close(fd)
+            temporary = Path(tmpname)
+            try:
+                with candidate.open("rb") as source, temporary.open("wb") as dest:
+                    try:
+                        fcntl.ioctl(dest.fileno(), FICLONE, source.fileno())
+                    except OSError:
+                        while block := source.read(CHUNK):
+                            check_cancel(cancel)
+                            dest.write(block)
+                check_cancel(cancel)
+                if sha256(temporary, cancel) != info["digest"]:
+                    continue
+                temporary.chmod(0o755)
+                os.replace(temporary, root / "SavageWind-official.AppImage")
+                emit("progress", "AppImage oficial local reutilizado com segurança.", 100)
+                return root / "SavageWind-official.AppImage"
+            finally:
+                temporary.unlink(missing_ok=True)
+        except OSError:
+            continue
+    return None
+
+
 def stop_process(proc):
     try:
         os.killpg(proc.pid, signal.SIGTERM)
@@ -476,13 +532,11 @@ class Pipeline:
             move_data(legacy, root, self.status, self.cancel)
         portable_env(root)
         state = read_state(root)
-        if not valid_game(root / "extracted"):
-            if isinstance(source, dict):
-                import_packages(root, source, self.status, self.cancel)
-            elif source:
-                copy_game(root, source, self.status, self.cancel)
-            else:
-                return "setup"
+        if not valid_game(root / "extracted") and not source:
+            return "setup"
+        # Check availability before copying many GiB of game files.
+        if source and (root / "extracted").exists() and not valid_game(root / "extracted"):
+            raise InstallError("A pasta extracted/ já existe, mas está incompleta. Não será sobrescrita.")
         self.status("stage", "Procurando atualizações oficiais...")
         installed = local_release(root, state)
         try:
@@ -498,7 +552,8 @@ class Pipeline:
                     self.status("stage", "Protegendo a versão atual antes de atualizar...")
                     rollback.begin(dict(state))
                 try:
-                    installed = download_release(remote, root, self.status, self.cancel)
+                    installed = (adopt_release(remote, root, self.status, self.cancel)
+                                 or download_release(remote, root, self.status, self.cancel))
                     stat = installed.stat()
                     state.update({"official_digest": remote["digest"], "official_tag": remote["tag"],
                                   "official_size": stat.st_size, "official_mtime_ns": stat.st_mtime_ns})
@@ -511,6 +566,13 @@ class Pipeline:
             if not installed:
                 raise InstallError("Não existe AppImage oficial instalado e não foi possível baixá-lo.")
             check_cancel(self.cancel)
+            if not valid_game(root / "extracted"):
+                if isinstance(source, dict):
+                    import_packages(root, source, self.status, self.cancel)
+                elif source:
+                    copy_game(root, source, self.status, self.cancel)
+                else:
+                    return "setup"
             # A rebuild is mandatory only after changing the executable or importing new game files.
             key = state.get("built_digest")
             if (key != state.get("official_digest") or
