@@ -384,17 +384,17 @@ def import_packages(root, paths, emit, cancel):
                                 selection.unregister(key.fileobj)
                                 continue
                             lines.extend(chunk)
-                            while b"\\n" in lines:
-                                raw, _, tail = lines.partition(b"\\n")
+                            while b"\n" in lines:
+                                raw, _, tail = lines.partition(b"\n")
                                 lines = bytearray(tail)
                                 line = raw.decode("utf-8", "replace").strip()
                                 if not line:
                                     continue
-                                logfile.write(line + "\\n")
+                                logfile.write(line + "\n")
                                 emit("log", line, None)
                                 if line.startswith("RomFS file "):
                                     import re
-                                    match = re.match(r"RomFS file (\\d+)/(\\d+):", line)
+                                    match = re.match(r"RomFS file (\d+)/(\d+):", line)
                                     if match and int(match.group(2)):
                                         emit("progress", "Expandindo os arquivos do jogo...",
                                              round(100 * int(match.group(1)) / int(match.group(2)), 1))

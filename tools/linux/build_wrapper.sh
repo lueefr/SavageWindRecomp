@@ -31,10 +31,10 @@ cp "$ROOT/dist/swextract" "$ROOT/hactool/hactool" "$APPDIR/usr/bin/"
 cp "$ROOT/hactool/LICENSE" "$APPDIR/usr/bin/hactool-LICENSE.txt"
 cp tools/linux/nsp_vendor/LICENSE "$APPDIR/usr/bin/nsp-extractor-LICENSE.txt"
 # hactool can link dynamically to mbedTLS; bundle only those runtime libraries.
-ldd "$APPDIR/usr/bin/hactool" | awk '/=> \\/\\// { print $3 }' | while read -r lib; do
+ldd "$APPDIR/usr/bin/hactool" | awk '/=> \/\// { print $3 }' | while read -r lib; do
     case "$(basename "$lib")" in libmbed*.so*) cp -L "$lib" "$APPDIR/usr/lib/" ;; esac
 done
-patchelf --set-rpath '\$ORIGIN/../lib' "$APPDIR/usr/bin/hactool"
+patchelf --set-rpath '$ORIGIN/../lib' "$APPDIR/usr/bin/hactool"
 cp wrapper/__init__.py wrapper/core.py wrapper/launch.py wrapper/gtk_ui.py wrapper/migration.py wrapper/rollback.py "$APPDIR/usr/share/wrapper/"
 cp tools/linux/wrapper_AppRun "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
