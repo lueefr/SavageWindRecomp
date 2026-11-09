@@ -49,6 +49,35 @@ class BuildHandshakeTests(unittest.TestCase):
             except core.InstallError as error:
                 return False, str(error), (root / ".sw-wrapper/build.log").read_text()
 
+    def test_silent_compiler_still_updates_measured_percentage(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "root").mkdir()
+            (root / ".sw-wrapper").mkdir()
+            script = root / "silent-compiler"
+            script.write_text(
+                "#!/usr/bin/env python3\n"
+                "import pathlib, sys, time\n"
+                "game = pathlib.Path(sys.argv[1])\n"
+                "work = game / '.gamebuild'\n"
+                "work.mkdir()\n"
+                "(work / 'layout.txt').write_text('main 1000 100\\n')\n"
+                "(work / 'gen_main.log').write_text('main: progress 50/100 files 5\\n')\n"
+                "(work / 'main_000.o').write_bytes(b'object')\n"
+                "time.sleep(2.2)\n"
+                "(game / 'swgame.so').write_bytes(b'compiled library')\n"
+                "(game / 'swgame.so.id').write_text('valid-id\\n')\n"
+            )
+            script.chmod(0o755)
+            events = []
+            core.build_game(root, script, lambda *args: events.append(args),
+                            threading.Event())
+            measured = [(message, percent) for kind, message, percent in events
+                        if kind == "live" and percent is not None and percent > 0]
+            self.assertTrue(measured, "The UI must display a measured percentage without stdout")
+            self.assertTrue(any("Gerando C e compilando" in msg for msg, _ in measured))
+            self.assertTrue((root / "game/swgame.so").exists())
+
     def test_ready_and_complete_artifacts(self):
         ok, _, log = self.run_build(("[gamebuild] done in 30s",
                                      "[launcher] setup: Game files ready. -> READY"))
