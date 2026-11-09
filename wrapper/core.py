@@ -352,6 +352,11 @@ class Pipeline:
             raise InstallError("A pasta .sw-wrapper não pode ser um link simbólico.")
         (root / ".sw-wrapper").mkdir(exist_ok=True)
         self.status("stage", "Preparando o armazenamento portátil...")
+        from .rollback import Rollback
+        pending = Rollback(root)
+        if pending.folder.is_dir():
+            self.status("stage", "Recuperando uma atualização interrompida...")
+            pending.restore()
         from .migration import legacy_folder, move_data
         legacy = legacy_folder(root)
         if legacy is not None and self.ask(f"Instalação anterior encontrada em {legacy}.\nDeseja mover os arquivos, saves e configurações para a pasta deste AppImage?"):
@@ -370,28 +375,46 @@ class Pipeline:
         except (urllib.error.URLError, TimeoutError, OSError, ValueError, InstallError) as error:
             remote = None
             self.status("log", f"Atualização indisponível: {error}")
+        rollback = None
         if remote and (not installed or state.get("official_digest") != remote["digest"]):
             if not installed or self.ask(f"Há uma atualização do Savage Wind ({remote['tag']}).\nDeseja instalá-la?"):
-                installed = download_release(remote, root, self.status, self.cancel)
-                stat = installed.stat()
-                state.update({"official_digest": remote["digest"], "official_tag": remote["tag"],
-                              "official_size": stat.st_size, "official_mtime_ns": stat.st_mtime_ns})
+                if installed:
+                    rollback = Rollback(root)
+                    self.status("stage", "Protegendo a versão atual antes de atualizar...")
+                    rollback.begin(dict(state))
+                try:
+                    installed = download_release(remote, root, self.status, self.cancel)
+                    stat = installed.stat()
+                    state.update({"official_digest": remote["digest"], "official_tag": remote["tag"],
+                                  "official_size": stat.st_size, "official_mtime_ns": stat.st_mtime_ns})
+                    write_state(root, state)
+                except BaseException:
+                    if rollback:
+                        rollback.restore()
+                    raise
+        try:
+            if not installed:
+                raise InstallError("Não existe AppImage oficial instalado e não foi possível baixá-lo.")
+            check_cancel(self.cancel)
+            # A rebuild is mandatory only after changing the executable or importing new game files.
+            key = state.get("built_digest")
+            if (key != state.get("official_digest") or
+                    not (root / "extracted/swgame.so").is_file() or
+                    not (root / "extracted/swgame.so.id").is_file()):
+                build_game(root, installed, self.status, self.cancel)
+                state["built_digest"] = state.get("official_digest")
                 write_state(root, state)
-        if not installed:
-            raise InstallError("Não existe AppImage oficial instalado e não foi possível baixá-lo.")
-        check_cancel(self.cancel)
-        # A rebuild is mandatory only after changing the executable or importing new game files.
-        key = state.get("built_digest")
-        if (key != state.get("official_digest") or
-                not (root / "extracted/swgame.so").is_file() or
-                not (root / "extracted/swgame.so.id").is_file()):
-            build_game(root, installed, self.status, self.cancel)
-            state["built_digest"] = state.get("official_digest")
-            write_state(root, state)
-        self.status("stage", "Iniciando o Savage Wind...")
-        process = subprocess.Popen([str(installed), "--play", str(root / "extracted")],
-                                   env=portable_env(root), cwd=root,
-                                   start_new_session=True, stdout=subprocess.DEVNULL,
-                                   stderr=(root / ".sw-wrapper/game.log").open("ab"))
-        self.status("log", f"Jogo iniciado (PID {process.pid}).")
-        return "launched"
+            self.status("stage", "Iniciando o Savage Wind...")
+            with (root / ".sw-wrapper/game.log").open("ab") as logfile:
+                process = subprocess.Popen([str(installed), "--play", str(root / "extracted")],
+                                           env=portable_env(root), cwd=root,
+                                           start_new_session=True, stdout=subprocess.DEVNULL,
+                                           stderr=logfile)
+            if rollback:
+                rollback.commit()
+            self.status("log", f"Jogo iniciado (PID {process.pid}).")
+            return "launched"
+        except BaseException:
+            if rollback:
+                rollback.restore()
+            raise
