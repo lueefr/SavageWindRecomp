@@ -4,6 +4,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton,
     QVBoxLayout, QHBoxLayout, QGroupBox, QFileDialog, QProgressBar, QPlainTextEdit,
     QMessageBox, QListWidget, QTabWidget)
@@ -114,6 +115,7 @@ class Window(QWidget):
         tasks.addLayout(buttons)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
+        self.live_start = None
         self.log.setMaximumBlockCount(600)
         self.log.hide()
         tasks.addWidget(self.log)
@@ -185,6 +187,21 @@ class Window(QWidget):
             return
         self.start(paths)
 
+    def append_log(self, message, live=False):
+        # Replace only the active progress block; completed steps remain in history.
+        cursor = self.log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        if live and self.live_start is not None:
+            cursor.setPosition(self.live_start)
+            cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
+            cursor.insertText(message)
+        else:
+            prefix = "\\n" if not self.log.document().isEmpty() else ""
+            position = cursor.position() + len(prefix)
+            cursor.insertText(prefix + message)
+            self.live_start = position if live else None
+        self.log.setTextCursor(cursor)
+
     def toggle_log(self):
         hidden = self.log.isHidden()
         self.log.setVisible(hidden)
@@ -223,6 +240,7 @@ class Window(QWidget):
         self.cancel_button.setEnabled(True)
         self.bar.setRange(0, 0)
         self.log.clear()
+        self.live_start = None
         self.log.hide()
         self.toggle.setText("Mostrar log")
         self.mark_step(-1)
@@ -259,14 +277,18 @@ class Window(QWidget):
                     self.reveal(message)
                     continue
                 if kind == "log":
-                    self.log.appendPlainText(message)
+                    self.append_log(message)
                     continue
-                self.stage.setText(message)
+                if kind == "live":
+                    self.append_log(message, live=True)
+                    self.stage.setText(message.splitlines()[0])
+                else:
+                    self.stage.setText(message)
                 if kind == "stage":
                     step = self.phase(message)
                     if step is not None:
                         self.mark_step(step)
-                    self.log.appendPlainText(message)
+                    self.append_log(message)
                 if fraction is None:
                     self.bar.setRange(0, 0)
                 else:
@@ -301,7 +323,7 @@ class Window(QWidget):
                 self.cancel_button.setEnabled(False)
                 self.stage.setText("Não foi possível concluir.")
                 self.back_button.show()
-                self.log.appendPlainText("ERRO: " + event[1])
+                self.append_log("ERRO: " + event[1])
                 self.reveal("Não foi possível concluir.")
                 QMessageBox.critical(self, "Savage Wind", event[1])
 
