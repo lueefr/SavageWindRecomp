@@ -45,6 +45,8 @@ class PortableTests(unittest.TestCase):
                                                         "APPDIR": "/tmp/runtime",
                                                         "LD_LIBRARY_PATH": "/tmp/runtime/lib"})
             self.assertEqual(variables["SAVAGEWIND_DATA_ROOT"], folder)
+            self.assertEqual(variables["HOME"], folder)
+            self.assertTrue(variables["TMPDIR"].startswith(folder))
             self.assertTrue(variables["MESA_SHADER_CACHE_DIR"].startswith(folder))
             self.assertTrue(variables["XDG_DATA_HOME"].startswith(folder))
             self.assertNotIn(".local/share/savagewind", json.dumps(variables))
@@ -144,6 +146,87 @@ class PortableTests(unittest.TestCase):
             with self.assertRaises(core.Cancelled):
                 move_data(old, dest, lambda *_: None, stopped)
             self.assertTrue((old / "save/data").exists())
+
+    def test_installer_lock_refuses_simultaneous_operations(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            control = root / ".sw-wrapper"
+            control.mkdir()
+            with (control / "operation.lock").open("a+b") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                result = core.Pipeline(root, lambda *_: None, lambda *_: False, threading.Event())
+                with self.assertRaisesRegex(core.InstallError, "operação"):
+                    result.run()
+
+    def test_existing_official_image_is_verified_before_adoption(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".sw-wrapper").mkdir()
+            binary = b"\x7fELF" + b"\0" * 4 + b"AI\x02" + b"A" * 1_100_000
+            existing = root / "Savage_Wind-v0.9.0-x86_64.AppImage"
+            existing.write_bytes(binary)
+            info = core.latest([release("v0.9.0", "2026-11-09T00:00:00Z", binary)], "x86_64")
+            chosen = core.adopt_release(info, root, lambda *_: None, threading.Event())
+            self.assertEqual(chosen, root / "SavageWind-official.AppImage")
+            self.assertEqual(chosen.read_bytes(), binary)
+            self.assertEqual(existing.read_bytes(), binary)
+            self.assertEqual(core.sha256(chosen), info["digest"])
+
+    def test_wrong_hash_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".sw-wrapper").mkdir()
+            existing = root / "Savage_Wind-v0.9.0-x86_64.AppImage"
+            existing.write_bytes(b"B" * 1_200_000)
+            info = core.latest([release("v0.9.0", "2026-11-09T00:00:00Z")], "x86_64")
+            self.assertIsNone(core.adopt_release(info, root, lambda *_: None, threading.Event()))
+            self.assertFalse((root / "SavageWind-official.AppImage").exists())
+
+    def test_nsp_mode_uses_extractor_without_touching_saves(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "save").mkdir()
+            (root / "save/slot.sav").write_bytes(b"save")
+            source = {"base": "/fake/base.xci", "update": "/fake/update.nsp", "keys": "/fake/prod.keys"}
+            official = root / "SavageWind-official.AppImage"
+            official.write_bytes(b"local")
+            stat = official.stat()
+            core.write_state(root, {"official_digest": "b" * 64,
+                                    "official_size": stat.st_size,
+                                    "official_mtime_ns": stat.st_mtime_ns})
+            def extract(root_, files, emit, cancel):
+                self.assertEqual(files, source)
+                game(root_)
+            def rebuild(root_, binary, emit, cancel):
+                (root_ / "extracted/swgame.so").write_bytes(b"compiled")
+                (root_ / "extracted/swgame.so.id").write_bytes(b"built")
+            with mock.patch.object(core, "fetch_latest", side_effect=OSError("offline")):
+                with mock.patch.object(core, "import_packages", side_effect=extract) as importer:
+                    with mock.patch.object(core, "build_game", side_effect=rebuild):
+                        with mock.patch.object(core.subprocess, "Popen") as start:
+                            start.return_value.pid = 123
+                            result = core.Pipeline(root, lambda *_: None,
+                                                   lambda *_: False, threading.Event()).run(source)
+            self.assertEqual(result, "launched")
+            importer.assert_called_once()
+            self.assertEqual((root / "save/slot.sav").read_bytes(), b"save")
+
+    def test_download_checked_before_copying_large_game(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source"
+            (source / "exefs").mkdir(parents=True)
+            (source / "romfs").mkdir()
+            (source / "exefs/main").write_bytes(b"NSO0")
+            (source / "exefs/main.npdm").write_bytes(b"META")
+            with mock.patch.object(core, "fetch_latest", side_effect=OSError("offline")):
+                with mock.patch.object(core, "copy_game") as copier:
+                    with self.assertRaises(core.InstallError):
+                        core.Pipeline(root, lambda *_: None, lambda *_: False,
+                                      threading.Event()).run(str(source))
+            copier.assert_not_called()
+            self.assertFalse((root / "extracted").exists())
 
     def test_no_game_shows_installer_without_network(self):
         with tempfile.TemporaryDirectory() as folder:
