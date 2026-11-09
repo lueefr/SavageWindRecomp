@@ -112,6 +112,7 @@ class Window(Gtk.Window):
         scroll = Gtk.ScrolledWindow()
         scroll.set_min_content_height(170)
         self.log = Gtk.TextView()
+        self.live_mark = None
         self.log.set_editable(False)
         self.log.set_cursor_visible(False)
         self.log.set_monospace(True)
@@ -180,6 +181,21 @@ class Window(Gtk.Window):
                 return
         self.start(source)
 
+    def append_log(self, message, live=False):
+        # Replace only the active progress block; preserve finished steps above it.
+        buf = self.log.get_buffer()
+        if live and self.live_mark is not None:
+            start = buf.get_iter_at_mark(self.live_mark)
+            buf.delete(start, buf.get_end_iter())
+            buf.insert(buf.get_end_iter(), message)
+            return
+        self.live_mark = None
+        if buf.get_char_count():
+            buf.insert(buf.get_end_iter(), "\\n")
+        if live:
+            self.live_mark = buf.create_mark(None, buf.get_end_iter(), True)
+        buf.insert(buf.get_end_iter(), message)
+
     def alert(self, message, question=False):
         dialog = Gtk.MessageDialog(transient_for=self if self.get_visible() else None, modal=True,
             message_type=Gtk.MessageType.QUESTION if question else Gtk.MessageType.ERROR,
@@ -218,6 +234,7 @@ class Window(Gtk.Window):
         self.cancel_button.set_sensitive(True)
         self.stage.set_text("Preparando...")
         self.log.get_buffer().set_text("")
+        self.live_mark = None
         self.mark_step(-1)
         self.progress_busy = True
         def emit(kind, message, fraction):
@@ -251,16 +268,18 @@ class Window(Gtk.Window):
                     self.reveal(message)
                     continue
                 if kind == "log":
-                    buf = self.log.get_buffer()
-                    buf.insert(buf.get_end_iter(), message + "\n")
+                    self.append_log(message)
                     continue
-                self.stage.set_text(message)
+                if kind == "live":
+                    self.append_log(message, live=True)
+                    self.stage.set_text(message.splitlines()[0])
+                else:
+                    self.stage.set_text(message)
                 if kind == "stage":
                     step = self.phase(message)
                     if step is not None:
                         self.mark_step(step)
-                    buf = self.log.get_buffer()
-                    buf.insert(buf.get_end_iter(), message + "\n")
+                    self.append_log(message)
                 self.progress_busy = fraction is None
                 if fraction is None:
                     self.bar.pulse()
@@ -287,8 +306,7 @@ class Window(Gtk.Window):
                 self.cancel_button.set_sensitive(False)
                 self.stage.set_text("Não foi possível concluir.")
                 self.back_button.show()
-                buf = self.log.get_buffer()
-                buf.insert(buf.get_end_iter(), "ERRO: " + event[1] + "\n")
+                self.append_log("ERRO: " + event[1])
                 self.reveal("Não foi possível concluir.")
                 self.alert(event[1])
         if self.running and self.progress_busy:
