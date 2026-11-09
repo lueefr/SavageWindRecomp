@@ -323,9 +323,24 @@ class Pipeline:
     def __init__(self, root, emit, ask, cancel):
         self.root = Path(root).resolve()
         self.emit, self.ask, self.cancel = emit, ask, cancel
+        self._last_progress = 0.0
+        self._last_log = 0.0
 
     def status(self, kind, message, fraction=None):
         check_cancel(self.cancel)
+        if kind in ("log", "stage"):
+            # Keep every important line on disk, but bound the UI event rate.
+            with (self.root / ".sw-wrapper/events.log").open("a", encoding="utf-8") as stream:
+                stream.write(f"[{kind}] {message}\n")
+        now = time.monotonic()
+        if kind == "progress":
+            if fraction != 100 and now - self._last_progress < 0.12:
+                return
+            self._last_progress = now
+        elif kind == "log":
+            if now - self._last_log < 0.035:
+                return
+            self._last_log = now
         self.emit(kind, message, fraction)
 
     def run(self, source=None):
