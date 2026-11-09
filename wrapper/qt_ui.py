@@ -196,7 +196,7 @@ class Window(QWidget):
             cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
             cursor.insertText(message)
         else:
-            prefix = "\\n" if not self.log.document().isEmpty() else ""
+            prefix = "\n" if not self.log.document().isEmpty() else ""
             position = cursor.position() + len(prefix)
             cursor.insertText(prefix + message)
             self.live_start = position if live else None
