@@ -643,6 +643,24 @@ def build_game(root, binary, emit, cancel):
 
 
 
+def import_detail(title, done, total, count, total_count, unit, started):
+    """Render one replaceable four-line snapshot from measured progress."""
+    ratio = 100 * done / total if total else 0
+    elapsed = time.monotonic() - started
+    if elapsed >= 4 and done > 0 and done < total:
+        remaining = max(0, int(elapsed * (total - done) / done))
+        eta = f"{remaining // 60:02d}:{remaining % 60:02d}"
+    elif done >= total and total:
+        eta = "00:00"
+    else:
+        eta = "calculando..."
+    return (f"{title}: {ratio:.1f}%\\n"
+            f"{title.split(':')[0]}: {ratio:.1f}% "
+            f"({done // CHUNK} / {total // CHUNK} MiB)\\n"
+            f"{count} de {total_count} {unit}\\n"
+            f"ETA: {eta}")
+
+
 def import_packages(root, paths, emit, cancel):
     # The isolated importer runs as a process group: Cancel kills hactool as well.
     root = Path(root).resolve()
@@ -671,7 +689,9 @@ def import_packages(root, paths, emit, cancel):
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     start_new_session=True, bufsize=0)
             lines = bytearray()
-            nca_logged = {}
+            phase_start = time.monotonic()
+            phase_name = None
+            import re
             with selectors.DefaultSelector() as selection:
                 selection.register(proc.stdout, selectors.EVENT_READ)
                 try:
@@ -684,36 +704,44 @@ def import_packages(root, paths, emit, cancel):
                                 selection.unregister(key.fileobj)
                                 continue
                             lines.extend(chunk)
-                            while b"\n" in lines:
-                                raw, _, tail = lines.partition(b"\n")
+                            while b"\\n" in lines:
+                                raw, _, tail = lines.partition(b"\\n")
                                 lines = bytearray(tail)
                                 line = raw.decode("utf-8", "replace").strip()
                                 if not line:
                                     continue
-                                logfile.write(line + "\n")
-                                if line.startswith("RomFS file "):
-                                    import re
-                                    match = re.match(r"RomFS file (\d+)/(\d+):", line)
-                                    if match and int(match.group(2)):
-                                        emit("progress", "Expandindo os arquivos do jogo...",
-                                             round(100 * int(match.group(1)) / int(match.group(2)), 1))
+                                logfile.write(line + "\\n")
+                                nca = re.match(r"NCA progress (base|update) (\\d+)/(\\d+)", line)
+                                romfs = re.match(r"RomFS file (\\d+)/(\\d+):", line)
+                                if nca and int(nca.group(3)):
+                                    name = nca.group(1)
+                                    if phase_name != name:
+                                        phase_name, phase_start = name, time.monotonic()
+                                    done, total = int(nca.group(2)), int(nca.group(3))
+                                    label = "base" if name == "base" else "atualização"
+                                    title = f"Copiando NCA {label}"
+                                    snapshot = import_detail(title, done, total,
+                                                             int(done == total), 1,
+                                                             "arquivo NCA", phase_start)
+                                    emit("live", snapshot, round(100 * done / total, 1))
+                                elif romfs and int(romfs.group(2)):
+                                    if phase_name != "romfs":
+                                        phase_name, phase_start = "romfs", time.monotonic()
+                                    count, total = int(romfs.group(1)), int(romfs.group(2))
+                                    # The file count is known only after the RomFS index is read.
+                                    elapsed = time.monotonic() - phase_start
+                                    if elapsed >= 4 and count > 1 and count < total:
+                                        remaining = int(elapsed * (total - count) / count)
+                                        eta = f"{remaining // 60:02d}:{remaining % 60:02d}"
+                                    elif count == total:
+                                        eta = "00:00"
                                     else:
-                                        emit("log", line, None)
-                                elif line.startswith("NCA progress "):
-                                    import re
-                                    match = re.match(r"NCA progress (base|update) (\\d+)/(\\d+)", line)
-                                    if match and int(match.group(3)):
-                                        label = "base" if match.group(1) == "base" else "atualização"
-                                        percent = round(100 * int(match.group(2)) / int(match.group(3)), 1)
-                                        emit("progress", f"Copiando NCA {label}: {percent:.1f}%", percent)
-                                        milestone = int(percent // 10)
-                                        if milestone > nca_logged.get(label, -1):
-                                            nca_logged[label] = milestone
-                                            emit("log", f"NCA {label}: {percent:.1f}% "
-                                                        f"({int(match.group(2)) // CHUNK} / "
-                                                        f"{int(match.group(3)) // CHUNK} MiB)", None)
-                                    else:
-                                        emit("log", line, None)
+                                        eta = "calculando..."
+                                    snapshot = (f"Extraindo RomFS: {100 * count / total:.1f}%\\n"
+                                                f"Arquivos extraídos: {count} / {total}\\n"
+                                                f"{count} de {total} arquivos\\n"
+                                                f"ETA: {eta}")
+                                    emit("live", snapshot, round(100 * count / total, 1))
                                 elif line.startswith(("Checking ", "Inspect", "Merging ",
                                                       "Copying ", "Extracting ", "Expanding ",
                                                       "Verified ", "Game files ready")):
