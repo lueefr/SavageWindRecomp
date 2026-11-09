@@ -39,7 +39,15 @@ Para pedir a janela do instalador mesmo com o jogo já instalado:
 ## Atualizações e execução
 
 A cada abertura, consulta as releases publicadas no repositório oficial,
-incluindo **pré-releases**, e compara o SHA-256 do AppImage. Quando encontra
+incluindo **pré-releases**, e compara o SHA-256 do AppImage.
+Se o jogo já estiver instalado, essa consulta acontece em uma thread de trabalho
+**com a janela inteiramente oculta**; sem atualização nem preparação obrigatória,
+o jogo abre diretamente, sem exibir a interface do wrapper. Se encontrar uma
+atualização, mostra apenas a confirmação. A janela de progresso só aparece
+depois que o usuário aceitar a atualização, ou para recuperação, migração,
+compilação necessária ou um erro. No primeiro uso, o formulário de instalação
+é exibido normalmente. A consulta de rede ainda é concluída antes de iniciar
+o jogo, para que atualizações possam ser oferecidas antes de abrir a sessão. Quando encontra
 atualização, pergunta se deseja instalá-la. O download tem progresso,
 pode ser cancelado e só substitui a cópia gerenciada após validação de tamanho
 e hash. A busca por AppImages já baixados se limita a pastas comuns e à pasta

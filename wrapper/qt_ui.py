@@ -19,6 +19,7 @@ class Window(QWidget):
         self.events = queue.Queue()
         self.cancel_event = threading.Event()
         self.running = False
+        self.autostart = autoplay and (valid_game(self.root / "extracted") or legacy_folder(self.root) is not None)
         self.setWindowTitle("Savage Wind — Instalador")
         self.resize(680, 510)
         layout = QVBoxLayout(self)
@@ -122,9 +123,18 @@ class Window(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.pump)
         self.timer.start(75)
-        if autoplay and (valid_game(self.root / "extracted") or legacy_folder(self.root)):
+        if self.autostart:
             self.form.hide()
             QTimer.singleShot(0, lambda: self.start(None))
+
+    def reveal(self, message):
+        # The update probe runs without mapping the installer's native window.
+        self.stage.setText(message)
+        self.form.hide()
+        self.progress_box.show()
+        if not self.isVisible():
+            self.show()
+            QApplication.instance().setQuitOnLastWindowClosed(True)
 
     def mark_step(self, stage):
         for i, name in enumerate(self.step_names):
@@ -213,6 +223,8 @@ class Window(QWidget):
         self.cancel_button.setEnabled(True)
         self.bar.setRange(0, 0)
         self.log.clear()
+        self.log.hide()
+        self.toggle.setText("Mostrar log")
         self.mark_step(-1)
         self.stage.setText("Iniciando...")
         def emit(kind, message, fraction):
@@ -243,6 +255,9 @@ class Window(QWidget):
                 break
             if event[0] == "event":
                 _, kind, message, fraction = event
+                if kind == "reveal":
+                    self.reveal(message)
+                    continue
                 if kind == "log":
                     self.log.appendPlainText(message)
                     continue
@@ -259,7 +274,9 @@ class Window(QWidget):
                     self.bar.setValue(int(fraction))
             elif event[0] == "question":
                 _, message, answer, gate = event
-                response = QMessageBox.question(self, "Atualização do Savage Wind", message,
+                # A modal question alone is shown; declining must not reveal the installer.
+                parent = self if self.isVisible() else None
+                response = QMessageBox.question(parent, "Atualização do Savage Wind", message,
                                                 QMessageBox.StandardButton.Yes |
                                                 QMessageBox.StandardButton.No,
                                                 QMessageBox.StandardButton.Yes)
@@ -272,8 +289,11 @@ class Window(QWidget):
                 elif event[1] == "setup":
                     self.progress_box.hide()
                     self.form.show()
+                    if not self.isVisible():
+                        self.show()
+                        QApplication.instance().setQuitOnLastWindowClosed(True)
                 else:
-                    self.stage.setText("Operação cancelada.")
+                    self.reveal("Operação cancelada.")
                     self.cancel_button.setEnabled(False)
                     self.back_button.show()
             elif event[0] == "error":
@@ -282,6 +302,7 @@ class Window(QWidget):
                 self.stage.setText("Não foi possível concluir.")
                 self.back_button.show()
                 self.log.appendPlainText("ERRO: " + event[1])
+                self.reveal("Não foi possível concluir.")
                 QMessageBox.critical(self, "Savage Wind", event[1])
 
 
@@ -289,7 +310,10 @@ def run(root, selftest=False, autoplay=True):
     app = QApplication.instance() or QApplication([])
     app.setApplicationName("Savage Wind")
     window = Window(root, autoplay=autoplay and not selftest)
-    window.show()
+    # No mapped window when launching an existing installation without updates.
+    app.setQuitOnLastWindowClosed(not window.autostart)
+    if selftest or not window.autostart:
+        window.show()
     if selftest:
         app.processEvents()
         window.close()

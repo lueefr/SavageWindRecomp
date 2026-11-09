@@ -606,6 +606,7 @@ class Pipeline:
         from .rollback import Rollback
         pending = Rollback(root)
         if pending.folder.is_dir():
+            self.status("reveal", "Recuperando uma atualização interrompida...")
             self.status("stage", "Recuperando uma atualização interrompida...")
             pending.restore()
         from .migration import legacy_folder, move_data
@@ -619,6 +620,7 @@ class Pipeline:
                                   "os mesmos nomes já existem no destino (" +
                                   ", ".join(collisions[:5]) + ").")
             elif self.ask(f"Instalação anterior encontrada em {legacy}.\nDeseja mover os arquivos, saves e configurações para a pasta deste AppImage?"):
+                self.status("reveal", "Migrando os arquivos da instalação anterior...")
                 move_data(legacy, root, self.status, self.cancel)
             else:
                 state["ignored_legacy"] = str(legacy)
@@ -642,6 +644,7 @@ class Pipeline:
         rollback = None
         if remote and (not installed or state.get("official_digest") != remote["digest"]):
             if not installed or self.ask(f"Há uma atualização do Savage Wind ({remote['tag']}).\nDeseja instalá-la?"):
+                self.status("reveal", f"Instalando Savage Wind {remote['tag']}...")
                 if installed:
                     rollback = Rollback(root)
                     self.status("stage", "Protegendo a versão atual antes de atualizar...")
@@ -675,6 +678,7 @@ class Pipeline:
             if (key != state.get("official_digest") or cpu_changed or
                     not (root / "extracted/swgame.so").is_file() or
                     not (root / "extracted/swgame.so.id").is_file()):
+                self.status("reveal", "Preparando o código nativo do jogo...")
                 if cpu_changed:
                     self.status("stage", "CPU diferente detectada; preparando código nativo compatível...")
                 build_game(root, installed, self.status, self.cancel)

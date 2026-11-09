@@ -290,6 +290,89 @@ class PortableTests(unittest.TestCase):
             rebuild.assert_not_called()
             self.assertEqual(launch.call_args.args[0][1], "--play")
 
+    def test_no_update_stays_silent_and_opens_game(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = game(root)
+            (path / "swgame.so").write_bytes(b"compiled")
+            (path / "swgame.so.id").write_bytes(b"known")
+            binary = root / "SavageWind-official.AppImage"
+            binary.write_bytes(b"stub")
+            digest = "a" * 64
+            core.write_state(root, {
+                "official_digest": digest, "official_size": binary.stat().st_size,
+                "official_mtime_ns": binary.stat().st_mtime_ns,
+                "built_digest": digest, "built_cpu": core.cpu_target(),
+            })
+            events = []
+            with mock.patch.object(core, "fetch_latest", side_effect=OSError("offline")):
+                with mock.patch.object(core.subprocess, "Popen") as launch:
+                    launch.return_value.pid = 44
+                    result = core.Pipeline(root, lambda *args: events.append(args),
+                                           lambda *_: self.fail("unexpected question"),
+                                           threading.Event()).run()
+            self.assertEqual(result, "launched")
+            self.assertNotIn("reveal", [event[0] for event in events])
+            self.assertEqual(launch.call_args.args[0][1], "--play")
+
+    def test_declined_update_never_reveals_progress(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = game(root)
+            (path / "swgame.so").write_bytes(b"compiled")
+            (path / "swgame.so.id").write_bytes(b"known")
+            binary = root / "SavageWind-official.AppImage"
+            binary.write_bytes(b"stub")
+            digest = "a" * 64
+            core.write_state(root, {
+                "official_digest": digest, "official_size": binary.stat().st_size,
+                "official_mtime_ns": binary.stat().st_mtime_ns,
+                "built_digest": digest, "built_cpu": core.cpu_target(),
+            })
+            events = []
+            update = core.latest([release("v0.9", "2026-11-10T00:00:00Z")], "x86_64")
+            with mock.patch.object(core, "fetch_latest", return_value=update):
+                with mock.patch.object(core.subprocess, "Popen") as launch:
+                    launch.return_value.pid = 45
+                    result = core.Pipeline(root, lambda *args: events.append(args),
+                                           lambda *_: False, threading.Event()).run()
+            self.assertEqual(result, "launched")
+            self.assertNotIn("reveal", [event[0] for event in events])
+
+    def test_update_accepted_reveals_progress(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = game(root)
+            (path / "swgame.so").write_bytes(b"compiled")
+            (path / "swgame.so.id").write_bytes(b"known")
+            binary = root / "SavageWind-official.AppImage"
+            binary.write_bytes(b"stub")
+            digest = "a" * 64
+            core.write_state(root, {
+                "official_digest": digest, "official_size": binary.stat().st_size,
+                "official_mtime_ns": binary.stat().st_mtime_ns,
+                "built_digest": digest, "built_cpu": core.cpu_target(),
+            })
+            events = []
+            update = core.latest([release("v0.9", "2026-11-10T00:00:00Z")], "x86_64")
+            def downloaded(info, destination, emit, cancel):
+                new = destination / "SavageWind-official.AppImage"
+                new.write_bytes(b"updated image")
+                return new
+            def rebuilt(destination, executable, emit, cancel):
+                (destination / "extracted/swgame.so").write_bytes(b"new code")
+                (destination / "extracted/swgame.so.id").write_bytes(b"new id")
+            with mock.patch.object(core, "fetch_latest", return_value=update):
+                with mock.patch.object(core, "adopt_release", return_value=None):
+                    with mock.patch.object(core, "download_release", side_effect=downloaded):
+                        with mock.patch.object(core, "build_game", side_effect=rebuilt):
+                            with mock.patch.object(core.subprocess, "Popen") as launch:
+                                launch.return_value.pid = 45
+                                result = core.Pipeline(root, lambda *args: events.append(args),
+                                                       lambda *_: True, threading.Event()).run()
+            self.assertEqual(result, "launched")
+            self.assertIn("reveal", [event[0] for event in events])
+
     def test_cpu_target_respects_compat_override(self):
         with mock.patch.dict(os.environ, {"SAVAGEWIND_COMPAT_CPU": "1"}):
             self.assertIn("compatible", core.cpu_target())

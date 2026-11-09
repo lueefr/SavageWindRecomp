@@ -121,6 +121,14 @@ class Window(Gtk.Window):
         self.progress_box.hide()
         GLib.timeout_add(90, self.pump)
 
+    def reveal(self, message):
+        # The native progress window is mapped only when there is real work.
+        self.stage.set_text(message)
+        self.show_all()
+        self.form.hide()
+        self.back_button.hide()
+        self.log_expander.set_expanded(False)
+
     def mark_step(self, step):
         for i, name in enumerate(self.step_names):
             mark = "✓" if i < step else "▶" if i == step else "○"
@@ -173,7 +181,7 @@ class Window(Gtk.Window):
         self.start(source)
 
     def alert(self, message, question=False):
-        dialog = Gtk.MessageDialog(transient_for=self, modal=True,
+        dialog = Gtk.MessageDialog(transient_for=self if self.get_visible() else None, modal=True,
             message_type=Gtk.MessageType.QUESTION if question else Gtk.MessageType.ERROR,
             buttons=Gtk.ButtonsType.YES_NO if question else Gtk.ButtonsType.OK,
             text=message)
@@ -239,6 +247,9 @@ class Window(Gtk.Window):
                 break
             if event[0] == "event":
                 _, kind, message, fraction = event
+                if kind == "reveal":
+                    self.reveal(message)
+                    continue
                 if kind == "log":
                     buf = self.log.get_buffer()
                     buf.insert(buf.get_end_iter(), message + "\n")
@@ -264,10 +275,11 @@ class Window(Gtk.Window):
                 if event[1] == "launched":
                     Gtk.main_quit()
                 elif event[1] == "setup":
+                    self.show_all()
                     self.progress_box.hide()
                     self.form.show_all()
                 else:
-                    self.stage.set_text("Operação cancelada.")
+                    self.reveal("Operação cancelada.")
                     self.cancel_button.set_sensitive(False)
                     self.back_button.show()
             elif event[0] == "error":
@@ -277,6 +289,7 @@ class Window(Gtk.Window):
                 self.back_button.show()
                 buf = self.log.get_buffer()
                 buf.insert(buf.get_end_iter(), "ERRO: " + event[1] + "\n")
+                self.reveal("Não foi possível concluir.")
                 self.alert(event[1])
         if self.running and self.progress_busy:
             self.bar.pulse()
@@ -287,10 +300,12 @@ def run(root, selftest=False, autoplay=True):
     if selftest:
         return 0
     window = Window(root)
-    window.show_all()
-    window.progress_box.hide()
-    if autoplay and (valid_game(Path(root) / "extracted") or legacy_folder(root)):
-        window.form.hide()
+    autostart = autoplay and (valid_game(Path(root) / "extracted") or legacy_folder(root) is not None)
+    if autostart:
+        # Never show an empty installer before checking the official release.
         GLib.idle_add(lambda: window.start(None) or False)
+    else:
+        window.show_all()
+        window.progress_box.hide()
     Gtk.main()
     return 0
