@@ -19,7 +19,7 @@ class Window(QWidget):
         self.events = queue.Queue()
         self.cancel_event = threading.Event()
         self.running = False
-        self.autostart = autoplay and (valid_game(self.root / "extracted") or legacy_folder(self.root) is not None)
+        self.autostart = autoplay and (valid_game(self.root / "root") or (self.root / "extracted").is_dir() or legacy_folder(self.root) is not None)
         self.setWindowTitle("Savage Wind — Instalador")
         self.resize(680, 510)
         layout = QVBoxLayout(self)
@@ -74,10 +74,10 @@ class Window(QWidget):
             self.packages[name] = field
         self.tabs.addTab(packages_page, "NSP / XCI")
         fields.addWidget(self.tabs)
-        destination = QLabel(f"Destino: {self.root / 'extracted'}")
+        destination = QLabel(f"Destino: {self.root / 'root'}")
         destination.setWordWrap(True)
         fields.addWidget(destination)
-        note = QLabel("Saves, configurações, caches e downloads permanecem junto ao AppImage. "
+        note = QLabel("Saves, configurações e cache ficam em game/ junto ao AppImage. "
                       "A importação pode exigir bastante espaço temporário.")
         note.setWordWrap(True)
         fields.addWidget(note)

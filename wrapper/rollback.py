@@ -8,8 +8,8 @@ from .core import InstallError, write_state
 
 FILES = {
     "official.AppImage": "SavageWind-official.AppImage",
-    "swgame.so": "extracted/swgame.so",
-    "swgame.so.id": "extracted/swgame.so.id",
+    "swgame.so": "game/swgame.so",
+    "swgame.so.id": "game/swgame.so.id",
 }
 
 

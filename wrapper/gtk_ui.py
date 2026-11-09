@@ -71,11 +71,11 @@ class Window(Gtk.Window):
             self.packages[name] = field
         self.tabs.append_page(packages_page, Gtk.Label(label="NSP / XCI"))
         self.form.pack_start(self.tabs, False, False, 0)
-        dest = Gtk.Label(label=f"Destino: {self.root / 'extracted'}")
+        dest = Gtk.Label(label=f"Destino: {self.root / 'root'}")
         dest.set_halign(Gtk.Align.START)
         dest.set_line_wrap(True)
         self.form.pack_start(dest, False, False, 0)
-        note = Gtk.Label(label="Saves, configurações e caches ficam junto ao AppImage.")
+        note = Gtk.Label(label="Saves, configurações e caches ficam em game/ junto ao AppImage.")
         note.set_halign(Gtk.Align.START)
         self.form.pack_start(note, False, False, 0)
         install = Gtk.Button(label="Instalar e jogar")
@@ -300,7 +300,7 @@ def run(root, selftest=False, autoplay=True):
     if selftest:
         return 0
     window = Window(root)
-    autostart = autoplay and (valid_game(Path(root) / "extracted") or legacy_folder(root) is not None)
+    autostart = autoplay and (valid_game(Path(root) / "root") or (Path(root) / "extracted").is_dir() or legacy_folder(root) is not None)
     if autostart:
         # Never show an empty installer before checking the official release.
         GLib.idle_add(lambda: window.start(None) or False)

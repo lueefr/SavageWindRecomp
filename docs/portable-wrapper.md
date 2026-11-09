@@ -21,15 +21,28 @@ A estrutura é aproximadamente:
     Jogos/SavageWind/
       SavageWind-Portable-x86_64.AppImage
       SavageWind-official.AppImage
-      extracted/exefs/, extracted/romfs/, extracted/swgame.so
-      save/, cache/, savagewind.ini
-      .sw-wrapper/ (estados, registros, temporários, rollback)
-      .xdg/ (outros dados XDG usados por bibliotecas)
+      root/
+        exefs/, romfs/ (arquivos extraídos do jogo)
+      game/
+        swgame.so, swgame.so.id (biblioteca recompilada)
+        save/, cache/, fonts/, savagewind.ini
+        .xdg/ (configurações e dados de bibliotecas)
+      .sw-wrapper/ (controle do instalador, logs, temporários, rollback)
 
 O wrapper inclui um pacote atualizado de certificados confiáveis (certifi/Mozilla),
 para que consultas e downloads por HTTPS funcionem mesmo quando o Python empacotado
 não consegue descobrir os certificados da distribuição Linux. A validação TLS e
 a conferência de SHA-256 permanecem obrigatórias.
+
+O wrapper passa root/ como origem dos arquivos do jogo e usa
+SAVAGEWIND_GAME_LIB para carregar game/swgame.so sem copiar exefs/romfs/
+para game/. Durante a compilação, o upstream escreve a biblioteca no
+diretório root/ e o portable publica o par swgame.so/.id em game/ ao final.
+
+Instalações antigas do wrapper são reorganizadas automaticamente: extracted/
+vira root/, enquanto saves, configurações e bibliotecas compiladas vão
+para game/. Em caso de conflito, a migração é interrompida sem sobrescrever
+arquivos. Dados antigos fora do portable continuam exigindo consentimento.
 
 O wrapper define SAVAGEWIND_DATA_ROOT, HOME, XDG_CONFIG_HOME, XDG_DATA_HOME,
 XDG_STATE_HOME, XDG_CACHE_HOME, MESA_SHADER_CACHE_DIR e TMPDIR **antes**

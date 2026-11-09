@@ -71,16 +71,23 @@ def move_data(source, root, emit, cancel):
         return 0
     children = list(source.iterdir())
     # Preflight before moving even one byte: never overwrite or merge directories belonging to the user.
+    raw, data = root / "root", root / "game"
+    if raw.is_symlink() or data.is_symlink():
+        raise InstallError("root/ e game/ não podem ser links simbólicos.")
+    def location(item):
+        return raw if item.name == "extracted" else data / item.name
     for item in children:
         check_cancel(cancel)
-        if item.is_symlink() or (root / item.name).exists():
+        target = location(item)
+        if item.is_symlink() or target.exists() or target.is_symlink():
             raise InstallError(f"Conflito de migração em {item.name}. Nenhum arquivo foi sobrescrito.")
+    data.mkdir(parents=True, exist_ok=True)
     emit("stage", "Verificando o tamanho da instalação anterior...", None)
     sizes = [(item, file_size(item, cancel)) for item in children]
     total, done, moved = sum(n for _, n in sizes), 0, 0
     for item, size in sizes:
         check_cancel(cancel)
-        target = root / item.name
+        target = location(item)
         emit("stage", f"Migrando {item.name}...", round(done * 100 / total, 1) if total else None)
         try:
             os.rename(item, target)
@@ -121,4 +128,64 @@ def move_data(source, root, emit, cancel):
     except OSError:
         pass
     emit("progress", "Instalação antiga migrada com sucesso.", 100)
+    return moved
+
+
+
+# Existing runtime data is reorganized without touching unrelated user files.
+OLD_PORTABLE_DATA = (
+    "save", "cache", "fonts", ".xdg", "savagewind.ini", "mods", "screenshots",
+    "saves", "shader_cache", "shadercache", "configs", "config", "profiles",
+)
+
+
+def organize_portable(root, emit, cancel):
+    root = Path(root).resolve()
+    raw, data = root / "root", root / "game"
+    previous = root / "extracted"
+    for folder in (raw, data, previous):
+        if folder.is_symlink():
+            raise InstallError(f"A pasta {folder.name}/ não pode ser um link simbólico.")
+    if raw.exists() and not raw.is_dir():
+        raise InstallError("root/ já existe, mas não é uma pasta.")
+    if data.exists() and not data.is_dir():
+        raise InstallError("game/ já existe, mas não é uma pasta.")
+
+    plan = []
+    if previous.exists():
+        if raw.exists():
+            raise InstallError("root/ e extracted/ existem simultaneamente. "
+                               "Os dados foram preservados; resolva o conflito antes de continuar.")
+        plan.append((previous, raw))
+    for name in OLD_PORTABLE_DATA:
+        source = root / name
+        if source.exists() or source.is_symlink():
+            plan.append((source, data / name))
+    original = previous if previous.exists() else raw
+    for name in ("swgame.so", "swgame.so.id"):
+        source = original / name
+        if source.exists() or source.is_symlink():
+            plan.insert(0, (source, data / name))
+    if not plan:
+        return 0
+
+    # Check every destination before changing a single file.
+    for source, dest in plan:
+        check_cancel(cancel)
+        if source.is_symlink() or dest.is_symlink() or dest.exists():
+            raise InstallError(f"Conflito de organização: {source} -> {dest}. "
+                               "Nenhum arquivo foi sobrescrito.")
+    emit("reveal", "Organizando root/ e game/...", None)
+    emit("stage", "Movendo os arquivos do jogo para a estrutura portátil...", None)
+    data.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for source, dest in plan:
+        check_cancel(cancel)
+        try:
+            os.rename(source, dest)
+        except OSError as error:
+            raise InstallError(f"Falha ao mover {source}: {error}. "
+                               "Os dados já movidos continuam preservados.") from error
+        moved += 1
+        emit("log", f"Movido: {source} -> {dest}", None)
     return moved
