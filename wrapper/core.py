@@ -47,6 +47,9 @@ def portable_env(root, base=None):
     for sub in ("cache/mesa", ".xdg/config", ".xdg/data", ".xdg/state", ".sw-wrapper/tmp"):
         (root / sub).mkdir(parents=True, exist_ok=True)
     env.update({
+        # HOME is redirected only for the official game and its helpers, not the desktop UI.
+        # This also catches libraries which ignore XDG_* and write directly to ~/.
+        "HOME": str(root),
         "SAVAGEWIND_DATA_ROOT": str(root),
         "XDG_CONFIG_HOME": str(root / ".xdg/config"),
         "XDG_DATA_HOME": str(root / ".xdg/data"),
@@ -263,7 +266,11 @@ def stop_process(proc):
     except (ProcessLookupError, OSError, subprocess.TimeoutExpired):
         try:
             os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, OSError):
+            pass
+        try:
+            proc.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
             pass
 
 
@@ -279,8 +286,14 @@ def build_game(root, binary, emit, cancel):
         proc = subprocess.Popen([str(binary), str(root / "extracted")],
                                 cwd=root, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, start_new_session=True, bufsize=0)
+        # Nice the compiler process without a preexec_fn (unsafe in a threaded Qt/GTK host).
+        try:
+            os.setpriority(os.PRIO_PROCESS, proc.pid, 8)
+        except (AttributeError, PermissionError, ProcessLookupError, OSError):
+            pass
         output, ready = bytearray(), False
         started = time.monotonic()
+        last_heartbeat = started
         with selectors.DefaultSelector() as sel:
             sel.register(proc.stdout, selectors.EVENT_READ)
             try:
@@ -289,6 +302,12 @@ def build_game(root, binary, emit, cancel):
                     if time.monotonic() - started > 3600:
                         raise InstallError("A recompilação ultrapassou uma hora.")
                     events = sel.select(timeout=0.35)
+                    now = time.monotonic()
+                    if now - last_heartbeat >= 2:
+                        seconds = int(now - started)
+                        emit("stage", f"Recompilando código nativo: {seconds // 60} min {seconds % 60:02d} s. "
+                                      "O compilador oficial está em execução.", None)
+                        last_heartbeat = now
                     for key, _ in events:
                         block = os.read(key.fd, 8192)
                         if not block:
@@ -319,6 +338,87 @@ def build_game(root, binary, emit, cancel):
     emit("progress", "Código do jogo preparado.", 100)
 
 
+
+def import_packages(root, paths, emit, cancel):
+    # The isolated importer runs as a process group: Cancel kills hactool as well.
+    root = Path(root).resolve()
+    base, update, keys = (Path(paths[key]).expanduser().resolve()
+                          for key in ("base", "update", "keys"))
+    if base == update or not all(p.is_file() for p in (base, update, keys)):
+        raise InstallError("Selecione os arquivos base NSP/XCI, atualização NSP e prod.keys válidos.")
+    if (root / "extracted").exists() or (root / "extracted").is_symlink():
+        raise InstallError("A pasta extracted/ já existe. Não será sobrescrita.")
+    bindir = os.environ.get("SAVAGEWIND_WRAPPER_BINDIR")
+    if not bindir:
+        raise InstallError("Os utilitários de importação não estão disponíveis nesta execução.")
+    binroot = Path(bindir)
+    importer, hactool = binroot / "swextract", binroot / "hactool"
+    if not importer.is_file() or not hactool.is_file():
+        raise InstallError("Este AppImage não contém os utilitários NSP/XCI verificados.")
+    temp = Path(tempfile.mkdtemp(prefix=".import-", dir=root / ".sw-wrapper"))
+    staged = temp / "game"
+    command = [str(importer), "--base", str(base), "--update", str(update),
+               "--keys", str(keys), "--hactool", str(hactool), "--dest", str(staged)]
+    log_path = root / ".sw-wrapper/import.log"
+    emit("stage", "Validando os pacotes NSP/XCI e as chaves selecionadas...", None)
+    try:
+        with log_path.open("w", encoding="utf-8") as logfile:
+            proc = subprocess.Popen(command, cwd=root, env=portable_env(root),
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    start_new_session=True, bufsize=0)
+            lines, last_notice = bytearray(), time.monotonic()
+            with selectors.DefaultSelector() as selection:
+                selection.register(proc.stdout, selectors.EVENT_READ)
+                try:
+                    while True:
+                        check_cancel(cancel)
+                        events = selection.select(timeout=0.4)
+                        now = time.monotonic()
+                        if now - last_notice > 3:
+                            emit("stage", "Importando os arquivos do jogo... "
+                                          "Consulte o log para detalhes.", None)
+                            last_notice = now
+                        for key, _ in events:
+                            chunk = os.read(key.fd, 16384)
+                            if not chunk:
+                                selection.unregister(key.fileobj)
+                                continue
+                            lines.extend(chunk)
+                            while b"\\n" in lines:
+                                raw, _, tail = lines.partition(b"\\n")
+                                lines = bytearray(tail)
+                                line = raw.decode("utf-8", "replace").strip()
+                                if not line:
+                                    continue
+                                logfile.write(line + "\\n")
+                                emit("log", line, None)
+                                if line.startswith("RomFS file "):
+                                    import re
+                                    match = re.match(r"RomFS file (\\d+)/(\\d+):", line)
+                                    if match and int(match.group(2)):
+                                        emit("progress", "Expandindo os arquivos do jogo...",
+                                             round(100 * int(match.group(1)) / int(match.group(2)), 1))
+                                elif line.startswith(("Checking ", "Inspect", "Merging ",
+                                                      "Copying ", "Extracting ", "Expanding ",
+                                                      "Verified ", "Game files ready")):
+                                    emit("stage", line[:180], None)
+                        if proc.poll() is not None and not selection.get_map():
+                            break
+                except BaseException:
+                    stop_process(proc)
+                    raise
+            proc.wait()
+            if lines:
+                logfile.write(lines.decode("utf-8", "replace"))
+        check_cancel(cancel)
+        if proc.returncode != 0 or not valid_game(staged):
+            raise InstallError(f"A importação falhou. Consulte {log_path}.")
+        os.replace(staged, root / "extracted")
+        emit("progress", "Pacotes importados e verificados.", 100)
+    finally:
+        shutil.rmtree(temp, ignore_errors=True)
+
+
 class Pipeline:
     def __init__(self, root, emit, ask, cancel):
         self.root = Path(root).resolve()
@@ -344,6 +444,19 @@ class Pipeline:
         self.emit(kind, message, fraction)
 
     def run(self, source=None):
+        # Prevent two GUI instances from replacing the same AppImage or extracted files.
+        folder = self.root / ".sw-wrapper"
+        if folder.is_symlink():
+            raise InstallError("A pasta .sw-wrapper não pode ser um link simbólico.")
+        folder.mkdir(exist_ok=True)
+        with (folder / "operation.lock").open("a+b") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise InstallError("Já existe uma operação do instalador em andamento.") from error
+            return self._run_locked(source)
+
+    def _run_locked(self, source=None):
         root = self.root
         fd, temp = tempfile.mkstemp(prefix=".write-", dir=root)
         os.close(fd)
@@ -364,7 +477,9 @@ class Pipeline:
         portable_env(root)
         state = read_state(root)
         if not valid_game(root / "extracted"):
-            if source:
+            if isinstance(source, dict):
+                import_packages(root, source, self.status, self.cancel)
+            elif source:
                 copy_game(root, source, self.status, self.cancel)
             else:
                 return "setup"
