@@ -8,6 +8,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, GLib
 
 from .core import Pipeline, Cancelled, valid_game
+from .migration import legacy_folder
 
 
 class Window(Gtk.Window):
@@ -39,6 +40,8 @@ class Window(Gtk.Window):
         instructions.set_halign(Gtk.Align.START)
         instructions.set_line_wrap(True)
         self.form.pack_start(instructions, False, False, 0)
+        self.tabs = Gtk.Notebook()
+        extracted_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.source = Gtk.Entry()
         self.source.set_placeholder_text("Pasta com exefs/ e romfs/")
@@ -46,7 +49,28 @@ class Window(Gtk.Window):
         pick = Gtk.Button(label="Procurar...")
         pick.connect("clicked", self.pick)
         row.pack_start(pick, False, False, 0)
-        self.form.pack_start(row, False, False, 0)
+        extracted_page.pack_start(row, False, False, 0)
+        self.tabs.append_page(extracted_page, Gtk.Label(label="Pasta extraída"))
+
+        packages_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        help_text = Gtk.Label(label="Jogo base NSP/XCI, atualização NSP e prod.keys:")
+        help_text.set_halign(Gtk.Align.START)
+        packages_page.pack_start(help_text, False, False, 0)
+        self.packages = {}
+        for name, title in (("base", "Jogo base"), ("update", "Atualização"), ("keys", "Chaves")):
+            label = Gtk.Label(label=title)
+            label.set_halign(Gtk.Align.START)
+            packages_page.pack_start(label, False, False, 0)
+            pkg_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            field = Gtk.Entry()
+            pkg_row.pack_start(field, True, True, 0)
+            browse = Gtk.Button(label="Procurar...")
+            browse.connect("clicked", self.pick_package, field, title)
+            pkg_row.pack_start(browse, False, False, 0)
+            packages_page.pack_start(pkg_row, False, False, 0)
+            self.packages[name] = field
+        self.tabs.append_page(packages_page, Gtk.Label(label="NSP / XCI"))
+        self.form.pack_start(self.tabs, False, False, 0)
         dest = Gtk.Label(label=f"Destino: {self.root / 'extracted'}")
         dest.set_halign(Gtk.Align.START)
         dest.set_line_wrap(True)
@@ -120,11 +144,26 @@ class Window(Gtk.Window):
             self.source.set_text(dialog.get_filename())
         dialog.destroy()
 
+    def pick_package(self, _, field, title):
+        dialog = Gtk.FileChooserDialog(title=title, parent=self,
+            action=Gtk.FileChooserAction.OPEN,
+            buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                     Gtk.STOCK_OPEN, Gtk.ResponseType.OK))
+        if dialog.run() == Gtk.ResponseType.OK:
+            field.set_text(dialog.get_filename())
+        dialog.destroy()
+
     def install(self, *_):
-        source = self.source.get_text().strip()
-        if not valid_game(source):
-            self.alert("A pasta precisa conter exefs/main, exefs/main.npdm e romfs/.")
-            return
+        if self.tabs.get_current_page() == 0:
+            source = self.source.get_text().strip()
+            if not valid_game(source):
+                self.alert("A pasta precisa conter exefs/main, exefs/main.npdm e romfs/.")
+                return
+        else:
+            source = {name: entry.get_text().strip() for name, entry in self.packages.items()}
+            if any(not path or not Path(path).is_file() for path in source.values()):
+                self.alert("Selecione o NSP/XCI base, a atualização NSP e o arquivo prod.keys.")
+                return
         self.start(source)
 
     def alert(self, message, question=False):
@@ -229,13 +268,13 @@ class Window(Gtk.Window):
         return True
 
 
-def run(root, selftest=False):
+def run(root, selftest=False, autoplay=True):
     if selftest:
         return 0
     window = Window(root)
     window.show_all()
     window.progress_box.hide()
-    if valid_game(Path(root) / "extracted"):
+    if autoplay and (valid_game(Path(root) / "extracted") or legacy_folder(root)):
         GLib.idle_add(lambda: window.start(None) or False)
     Gtk.main()
     return 0
