@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).resolve().parent / "nsp_vendor"))
 import extract_exefs as ex  # noqa: E402
 from extract_romfs import index_romfs  # noqa: E402
-from extract_update_romfs import copy_range, hactool_prod_keys  # noqa: E402
+from extract_update_romfs import hactool_prod_keys  # noqa: E402
 
 UNSIGNED = re.compile(r"\s*(?:Fixed-Key Signature|NPDM Signature) \(FAIL\)")
 FAILURE = re.compile(r"\(FAIL\)|\(INVALID\)|Failed to|Error:")
@@ -28,6 +28,23 @@ KEYS = re.compile(r"[0-9a-fA-F]{32,}")
 
 def progress(message):
     print(message, flush=True)
+
+
+def copy_nca(source, offset, size, target, label):
+    """Copy an NCA while reporting real byte progress at bounded intervals."""
+    done = 0
+    last_notice = 0.0
+    with source.open("rb") as src, target.open("wb") as dst:
+        src.seek(offset)
+        while done < size:
+            block = src.read(min(8 << 20, size - done))
+            ex.require(bool(block), "Truncated NCA")
+            dst.write(block)
+            done += len(block)
+            now = time.monotonic()
+            if now - last_notice >= 1.0 or done == size:
+                progress(f"NCA progress {label} {done}/{size}")
+                last_notice = now
 
 
 def inspect_package(path, keys, is_update):
@@ -77,9 +94,9 @@ def merge(base, update, keys_path, hactool, target, base_info, update_info, tick
         hactool_prod_keys(keys_path, prod_keys)
         base_nca, update_nca = work / "base.nca", work / "update.nca"
         progress("Copying the base Program NCA...")
-        copy_range(base, ex.record_offset(base_record), base_record["size"], base_nca)
+        copy_nca(base, ex.record_offset(base_record), base_record["size"], base_nca, "base")
         progress("Copying the update Program NCA...")
-        copy_range(update, ex.record_offset(update_record), update_record["size"], update_nca)
+        copy_nca(update, ex.record_offset(update_record), update_record["size"], update_nca, "update")
         progress("Merging the update RomFS and verifying hashes...")
         command = [str(hactool), "-x", "-y", "--disablekeywarns", "--suppresskeys", "-k", str(prod_keys),
                    f"--basenca={base_nca}", f"--section{sections[0]}={target}", str(update_nca)]
