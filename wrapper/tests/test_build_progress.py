@@ -19,7 +19,7 @@ class BuildProgressTests(unittest.TestCase):
 
     def test_actual_generation_and_object_counts(self):
         with tempfile.TemporaryDirectory() as folder:
-            work = Path(folder) / "extracted/.gamebuild"
+            work = Path(folder) / "root/.gamebuild"
             work.mkdir(parents=True)
             (work / "layout.txt").write_text("main 1000 8000\nsubsdk0 5000 2000\n")
             (work / "gen_main.log").write_text("main: progress 100/200 files 5\n")
@@ -35,7 +35,7 @@ class BuildProgressTests(unittest.TestCase):
 
     def test_eta_uses_recent_measured_progress_only(self):
         with tempfile.TemporaryDirectory() as folder:
-            work = Path(folder) / "extracted/.gamebuild"
+            work = Path(folder) / "root/.gamebuild"
             work.mkdir(parents=True)
             (work / "layout.txt").write_text("main 1000 100\n")
             log = work / "gen_main.log"
@@ -49,7 +49,7 @@ class BuildProgressTests(unittest.TestCase):
 
     def test_link_phase_is_measured_and_not_false_completed(self):
         with tempfile.TemporaryDirectory() as folder:
-            work = Path(folder) / "extracted/.gamebuild"
+            work = Path(folder) / "root/.gamebuild"
             work.mkdir(parents=True)
             (work / "layout.txt").write_text("main 1000 100\n")
             (work / "link.rsp").write_text("main_000.o\n")
@@ -62,7 +62,7 @@ class BuildProgressTests(unittest.TestCase):
 
     def test_repeated_log_reads_observe_new_appended_progress(self):
         with tempfile.TemporaryDirectory() as folder:
-            work = Path(folder) / "extracted/.gamebuild"
+            work = Path(folder) / "root/.gamebuild"
             work.mkdir(parents=True)
             (work / "layout.txt").write_text("main 1000 100\n")
             log = work / "gen_main.log"

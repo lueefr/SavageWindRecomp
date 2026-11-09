@@ -20,7 +20,7 @@ class HiddenLauncherTests(unittest.TestCase):
 
     @staticmethod
     def installed(root):
-        game = root / "extracted"
+        game = root / "root"
         (game / "exefs").mkdir(parents=True)
         (game / "romfs").mkdir()
         (game / "exefs/main").write_bytes(b"NSO0")

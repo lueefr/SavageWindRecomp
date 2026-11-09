@@ -24,7 +24,8 @@ def release(tag, published, binary=b"A" * 1200000, prerelease=True):
 
 
 def game(root):
-    path = Path(root) / "extracted"
+    path = Path(root) / "root"
+    (Path(root) / "game").mkdir(exist_ok=True)
     (path / "exefs").mkdir(parents=True)
     (path / "romfs").mkdir()
     (path / "exefs/main").write_bytes(b"NSO0")
@@ -48,8 +49,11 @@ class PortableTests(unittest.TestCase):
             variables = core.portable_env(Path(folder), {"HOME": "/tmp/fakehome",
                                                         "APPDIR": "/tmp/runtime",
                                                         "LD_LIBRARY_PATH": "/tmp/runtime/lib"})
-            self.assertEqual(variables["SAVAGEWIND_DATA_ROOT"], folder)
-            self.assertEqual(variables["HOME"], folder)
+            self.assertEqual(variables["SAVAGEWIND_DATA_ROOT"], str(Path(folder) / "game"))
+            self.assertEqual(variables["HOME"], str(Path(folder) / "game"))
+            launch = core.portable_env(Path(folder), play=True)
+            self.assertEqual(launch["SAVAGEWIND_GAME_LIB"],
+                             str(Path(folder) / "game/swgame.so"))
             self.assertTrue(variables["TMPDIR"].startswith(folder))
             self.assertTrue(variables["MESA_SHADER_CACHE_DIR"].startswith(folder))
             self.assertTrue(variables["XDG_DATA_HOME"].startswith(folder))
@@ -111,8 +115,8 @@ class PortableTests(unittest.TestCase):
             (original / "romfs/test.bin").write_bytes(b"1234")
             events = []
             core.copy_game(root, original, lambda *args: events.append(args), threading.Event())
-            self.assertTrue(core.valid_game(root / "extracted"))
-            self.assertEqual((root / "extracted/romfs/test.bin").read_bytes(), b"1234")
+            self.assertTrue(core.valid_game(root / "root"))
+            self.assertEqual((root / "root/romfs/test.bin").read_bytes(), b"1234")
             self.assertEqual(len(list((root / ".sw-wrapper").glob(".install-*"))), 0)
 
     def test_cancelled_copy_does_not_install_partial_game(self):
@@ -128,7 +132,7 @@ class PortableTests(unittest.TestCase):
             cancel.set()
             with self.assertRaises(core.Cancelled):
                 core.copy_game(root, original, lambda *_: None, cancel)
-            self.assertFalse((root / "extracted").exists())
+            self.assertFalse((root / "root").exists())
 
     def test_migration_moves_game_and_saves_without_creating_home_data(self):
         from wrapper.migration import move_data
@@ -144,8 +148,8 @@ class PortableTests(unittest.TestCase):
             (dest / ".sw-wrapper").mkdir(parents=True)
             move_data(old, dest, lambda *_: None, threading.Event())
             self.assertFalse(old.exists())
-            self.assertEqual((dest / "save/test.sav").read_bytes(), b"player save")
-            self.assertEqual((dest / "extracted/marker").read_bytes(), b"game")
+            self.assertEqual((dest / "game/save/test.sav").read_bytes(), b"player save")
+            self.assertEqual((dest / "root/marker").read_bytes(), b"game")
 
     def test_migration_refuses_existing_destination_before_moving_anything(self):
         from wrapper.migration import move_data
@@ -157,11 +161,11 @@ class PortableTests(unittest.TestCase):
             (old / "save").mkdir()
             (old / "save/data").write_bytes(b"save")
             (old / "cache").mkdir()
-            (dest / "cache").mkdir()
+            (dest / "game/cache").mkdir(parents=True)
             with self.assertRaises(core.InstallError):
                 move_data(old, dest, lambda *_: None, threading.Event())
             self.assertTrue((old / "save/data").exists())
-            self.assertFalse((dest / "save").exists())
+            self.assertFalse((dest / "game/save").exists())
 
     def test_cancelled_migration_leaves_old_files(self):
         from wrapper.migration import move_data
@@ -217,8 +221,8 @@ class PortableTests(unittest.TestCase):
     def test_nsp_mode_uses_extractor_without_touching_saves(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            (root / "save").mkdir()
-            (root / "save/slot.sav").write_bytes(b"save")
+            (root / "game/save").mkdir(parents=True)
+            (root / "game/save/slot.sav").write_bytes(b"save")
             source = {"base": "/fake/base.xci", "update": "/fake/update.nsp", "keys": "/fake/prod.keys"}
             official = root / "SavageWind-official.AppImage"
             official.write_bytes(b"local")
@@ -230,8 +234,8 @@ class PortableTests(unittest.TestCase):
                 self.assertEqual(files, source)
                 game(root_)
             def rebuild(root_, binary, emit, cancel):
-                (root_ / "extracted/swgame.so").write_bytes(b"compiled")
-                (root_ / "extracted/swgame.so.id").write_bytes(b"built")
+                (root_ / "game/swgame.so").write_bytes(b"compiled")
+                (root_ / "game/swgame.so.id").write_bytes(b"built")
             with mock.patch.object(core, "fetch_latest", side_effect=OSError("offline")):
                 with mock.patch.object(core, "import_packages", side_effect=extract) as importer:
                     with mock.patch.object(core, "build_game", side_effect=rebuild):
@@ -241,7 +245,7 @@ class PortableTests(unittest.TestCase):
                                                    lambda *_: False, threading.Event()).run(source)
             self.assertEqual(result, "launched")
             importer.assert_called_once()
-            self.assertEqual((root / "save/slot.sav").read_bytes(), b"save")
+            self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"save")
 
     def test_download_checked_before_copying_large_game(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -257,7 +261,7 @@ class PortableTests(unittest.TestCase):
                         core.Pipeline(root, lambda *_: None, lambda *_: False,
                                       threading.Event()).run(str(source))
             copier.assert_not_called()
-            self.assertFalse((root / "extracted").exists())
+            self.assertFalse((root / "root").exists())
 
     def test_cancel_stops_detached_compiler_groups(self):
         # The upstream creates subprocesses in distinct process groups on Linux.
@@ -300,8 +304,8 @@ class PortableTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             path = game(root)
-            (path / "swgame.so").write_bytes(b"fake")
-            (path / "swgame.so.id").write_bytes(b"fake id")
+            (root / "game/swgame.so").write_bytes(b"fake")
+            (root / "game/swgame.so.id").write_bytes(b"fake id")
             official = root / "SavageWind-official.AppImage"
             official.write_bytes(b"stub")
             state = {"official_digest": "a" * 64, "official_size": official.stat().st_size,
@@ -321,8 +325,8 @@ class PortableTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             path = game(root)
-            (path / "swgame.so").write_bytes(b"compiled")
-            (path / "swgame.so.id").write_bytes(b"known")
+            (root / "game/swgame.so").write_bytes(b"compiled")
+            (root / "game/swgame.so.id").write_bytes(b"known")
             binary = root / "SavageWind-official.AppImage"
             binary.write_bytes(b"stub")
             digest = "a" * 64
@@ -346,8 +350,8 @@ class PortableTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             path = game(root)
-            (path / "swgame.so").write_bytes(b"compiled")
-            (path / "swgame.so.id").write_bytes(b"known")
+            (root / "game/swgame.so").write_bytes(b"compiled")
+            (root / "game/swgame.so.id").write_bytes(b"known")
             binary = root / "SavageWind-official.AppImage"
             binary.write_bytes(b"stub")
             digest = "a" * 64
@@ -370,8 +374,8 @@ class PortableTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             path = game(root)
-            (path / "swgame.so").write_bytes(b"compiled")
-            (path / "swgame.so.id").write_bytes(b"known")
+            (root / "game/swgame.so").write_bytes(b"compiled")
+            (root / "game/swgame.so.id").write_bytes(b"known")
             binary = root / "SavageWind-official.AppImage"
             binary.write_bytes(b"stub")
             digest = "a" * 64
@@ -387,8 +391,8 @@ class PortableTests(unittest.TestCase):
                 new.write_bytes(b"updated image")
                 return new
             def rebuilt(destination, executable, emit, cancel):
-                (destination / "extracted/swgame.so").write_bytes(b"new code")
-                (destination / "extracted/swgame.so.id").write_bytes(b"new id")
+                (destination / "game/swgame.so").write_bytes(b"new code")
+                (destination / "game/swgame.so.id").write_bytes(b"new id")
             with mock.patch.object(core, "fetch_latest", return_value=update):
                 with mock.patch.object(core, "adopt_release", return_value=None):
                     with mock.patch.object(core, "download_release", side_effect=downloaded):
@@ -408,8 +412,8 @@ class PortableTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             path = game(root)
-            (path / "swgame.so").write_bytes(b"compiled")
-            (path / "swgame.so.id").write_bytes(b"known")
+            (root / "game/swgame.so").write_bytes(b"compiled")
+            (root / "game/swgame.so.id").write_bytes(b"known")
             binary = root / "SavageWind-official.AppImage"
             binary.write_bytes(b"stub")
             digest = "a" * 64
@@ -433,8 +437,8 @@ class PortableTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             path = game(root)
-            (path / "swgame.so").write_bytes(b"fake")
-            (path / "swgame.so.id").write_bytes(b"fake")
+            (root / "game/swgame.so").write_bytes(b"fake")
+            (root / "game/swgame.so.id").write_bytes(b"fake")
             official = root / "SavageWind-official.AppImage"
             official.write_bytes(b"old binary")
             state = {"official_digest": "a" * 64, "official_size": official.stat().st_size,

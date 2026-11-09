@@ -13,9 +13,9 @@ def helper(root, output, exit_code=0, artifacts=True, boot=False):
     body = [
         "#!/usr/bin/env python3",
         "import os, pathlib, sys, time",
-        "root = pathlib.Path(os.environ['SAVAGEWIND_DATA_ROOT'])",
-        "folder = root / 'extracted'",
+        "folder = pathlib.Path(sys.argv[1])",
         "assert folder.is_dir()",
+        "assert os.environ['SAVAGEWIND_DATA_ROOT'] == str(folder.parent / 'game')",
         "assert os.environ.get('SAVAGEWIND_LAUNCHER_EXTRACT') == ''",
     ]
     if artifacts:
@@ -36,12 +36,15 @@ class BuildHandshakeTests(unittest.TestCase):
     def run_build(self, output, exit_code=0, artifacts=True, boot=False):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            (root / "extracted").mkdir()
+            (root / "root").mkdir()
             (root / ".sw-wrapper").mkdir()
             program = helper(root, output, exit_code=exit_code, artifacts=artifacts, boot=boot)
             events = []
             try:
                 core.build_game(root, program, lambda *args: events.append(args), threading.Event())
+                self.assertTrue((root / "game/swgame.so").is_file())
+                self.assertTrue((root / "game/swgame.so.id").is_file())
+                self.assertFalse((root / "root/swgame.so").exists())
                 return True, events, (root / ".sw-wrapper/build.log").read_text()
             except core.InstallError as error:
                 return False, str(error), (root / ".sw-wrapper/build.log").read_text()
