@@ -119,10 +119,10 @@ class LayoutTests(unittest.TestCase):
             old_files(root)
             (root / ".sw-wrapper").mkdir()
             (root / ".sw-wrapper/build.log").write_text(
-                "[gamebuild] generator swgen, compiler zig cc, 4 jobs\\n"
-                f"[gamebuild] target: -march={core.cpu_target()} -O1\\n"
-                "[gamebuild] done in 305s\\n"
-                "[wrapper] failed to find READY\\n"
+                "[gamebuild] generator swgen, compiler zig cc, 4 jobs\n"
+                f"[gamebuild] target: -march={core.cpu_target()} -O1\n"
+                "[gamebuild] done in 305s\n"
+                "[wrapper] failed to find READY\n"
             )
             digest = "f" * 64
             core.write_state(root, {
