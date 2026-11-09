@@ -467,36 +467,50 @@ def compiled_code(root, staging=False):
 
 
 def recover_completed_code(root, installed, state, emit):
-    # Earlier wrappers could report a failed setup even after the upstream
-    # compiler had successfully created the native library. Recover only if
-    # the log confirms completion and the library is newer than this AppImage.
-    if state.get("built_digest") or not state.get("official_digest") or not compiled_code(root):
+    # A prior wrapper may have rejected a completed silent build. Trust the
+    # captured exit status only when the native pair is complete and was written
+    # after the exact official AppImage currently installed.
+    if state.get("built_digest") or not state.get("official_digest"):
         return False
-    lib = game_data(root) / "swgame.so"
     log = Path(root) / ".sw-wrapper/build.log"
     try:
-        if lib.stat().st_mtime_ns < Path(installed).stat().st_mtime_ns:
-            return False
         with log.open("rb") as file:
             file.seek(0, os.SEEK_END)
             file.seek(max(0, file.tell() - 65536))
             tail = file.read()
     except OSError:
         return False
-    if b"[gamebuild] done in " not in tail or b"-> NOT READY" in tail:
+    if b"-> NOT READY" in tail or b"not_ready=True" in tail:
         return False
-    # A portable folder might have moved to a different CPU. An old result
-    # is reusable only when the official compiler's logged target matches.
-    target = cpu_target()
-    if target not in ("x86-64-v2", "x86-64-v3"):
+    confirmed = b"[gamebuild] done in " in tail
+    silent = (b"exit=0" in tail and b"artifacts=True" in tail
+              and b"not_ready=False" in tail)
+    if not (confirmed or silent):
         return False
-    targets = [line for line in tail.splitlines() if line.startswith(b"[gamebuild] target")]
-    if not targets or ("-march=" + target).encode() not in targets[-1]:
+    source = game_files(root) if compiled_code(root, staging=True) else game_data(root)
+    if not compiled_code(root, staging=(source == game_files(root))):
         return False
+    try:
+        official_time = Path(installed).stat().st_mtime_ns
+        if any((source / name).stat().st_mtime_ns < official_time
+               for name in ("swgame.so", "swgame.so.id")):
+            return False
+    except OSError:
+        return False
+    if confirmed and not silent:
+        # Legacy logs contain the build target; require the same CPU family.
+        target = cpu_target()
+        if target not in ("x86-64-v2", "x86-64-v3"):
+            return False
+        targets = [line for line in tail.splitlines() if line.startswith(b"[gamebuild] target")]
+        if not targets or ("-march=" + target).encode() not in targets[-1]:
+            return False
+    if source == game_files(root):
+        publish_code(root)
     state["built_digest"] = state["official_digest"]
     state["built_cpu"] = cpu_target()
     write_state(root, state)
-    emit("log", "Compilação anterior recuperada do log oficial; "
+    emit("log", "Biblioteca nativa recuperada da compilação anterior; "
                 "reutilizando game/swgame.so sem recompilar.", None)
     return True
 
@@ -528,6 +542,7 @@ def build_game(root, binary, emit, cancel):
     # A completed compile and a valid library can recover from a missing READY
     # message or a failure after linking, but never override explicit NOT READY.
     with open(log_path, "w", encoding="utf-8") as logfile:
+        build_started_ns = time.time_ns()
         proc = subprocess.Popen([str(binary), str(game_files(root))],
                                 cwd=root, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, start_new_session=True, bufsize=0)
@@ -539,7 +554,7 @@ def build_game(root, binary, emit, cancel):
         output, ready, not_ready, compiled, entered_game = bytearray(), False, False, False, False
         started = time.monotonic()
         monitor = BuildMonitor(root, started=started)
-        last_heartbeat, last_log, build_active = started, started, False
+        last_heartbeat, last_log = started, started
         with selectors.DefaultSelector() as sel:
             sel.register(proc.stdout, selectors.EVENT_READ)
             try:
@@ -550,18 +565,13 @@ def build_game(root, binary, emit, cancel):
                     events = sel.select(timeout=0.35)
                     now = time.monotonic()
                     if now - last_heartbeat >= 1:
-                        progress = monitor.sample(now) if build_active else None
-                        if progress:
-                            emit("progress", progress.message, progress.percent)
-                            if now - last_log >= 5:
-                                message = "[progresso] " + progress.details
-                                logfile.write(message + "\n")
-                                logfile.flush()
-                                emit("log", message, None)
-                                last_log = now
-                        else:
-                            seconds = int(now - started)
-                            emit("stage", f"Iniciando o recompilador oficial · {seconds}s", None)
+                        progress = monitor.sample(now)
+                        emit("live", progress.message + "\n" + progress.details, progress.percent)
+                        if now - last_log >= 10:
+                            message = "[progresso] " + progress.details
+                            logfile.write(message + "\n")
+                            logfile.flush()
+                            last_log = now
                         last_heartbeat = now
                     for key, _ in events:
                         block = os.read(key.fd, 8192)
@@ -583,8 +593,6 @@ def build_game(root, binary, emit, cancel):
                                 compiled = True
                             if "nn::init::Start at" in line:
                                 entered_game = True
-                            if "[gamebuild] generator " in line:
-                                build_active = True
                             if line:
                                 emit("log", line, None)
                                 if not build_active and "[gamebuild]" in line:
@@ -612,12 +620,25 @@ def build_game(root, binary, emit, cancel):
         if output:
             logfile.write(output.decode("utf-8", errors="replace"))
         artifact_ok = compiled_code(root, staging=True)
+        # Silent upstream runs may write logs into their own data folder.
+        # A zero exit plus a newly written native pair is a stronger signal
+        # than the absence of READY/done text from the captured pipe.
+        newly_built = False
+        if artifact_ok:
+            try:
+                newly_built = all(
+                    (game_files(root) / name).stat().st_mtime_ns >= build_started_ns - 1_000_000_000
+                    for name in ("swgame.so", "swgame.so.id"))
+            except OSError:
+                pass
         accepted = artifact_ok and not not_ready and (
-            ready and proc.returncode == 0 or compiled or entered_game)
+            ready and proc.returncode == 0 or compiled or entered_game
+            or (proc.returncode == 0 and newly_built))
         logfile.write(f"[wrapper] Finalizado em {time.monotonic() - started:.1f}s; "
                       f"exit={proc.returncode}; ready={ready}; not_ready={not_ready}; "
                       f"build_done={compiled}; game_started={entered_game}; "
-                      f"artifacts={artifact_ok}; accepted={accepted}.\n")
+                      f"artifacts={artifact_ok}; newly_built={newly_built}; "
+                      f"accepted={accepted}.\n")
         logfile.flush()
     if not accepted:
         reasons = []
@@ -625,7 +646,7 @@ def build_game(root, binary, emit, cancel):
             reasons.append("swgame.so ou swgame.so.id ausente/inválido na pasta portátil")
         if not_ready:
             reasons.append("o upstream informou explicitamente NOT READY")
-        if not (ready or compiled or entered_game):
+        if not (ready or compiled or entered_game or (proc.returncode == 0 and newly_built)):
             reasons.append("não foi encontrada confirmação de compilação ou execução")
         if proc.returncode and not (compiled or entered_game):
             reasons.append(f"o processo terminou com código {proc.returncode}")
