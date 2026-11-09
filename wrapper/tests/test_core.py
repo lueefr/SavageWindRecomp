@@ -6,6 +6,10 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+import signal
+import subprocess
+import sys
+import time
 from unittest import mock
 
 from wrapper import core
@@ -227,6 +231,37 @@ class PortableTests(unittest.TestCase):
                                       threading.Event()).run(str(source))
             copier.assert_not_called()
             self.assertFalse((root / "extracted").exists())
+
+    def test_cancel_stops_detached_compiler_groups(self):
+        # The upstream creates subprocesses in distinct process groups on Linux.
+        command = (
+            "import subprocess, sys, time; "
+            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], "
+            "start_new_session=True); "
+            "print(p.pid, flush=True); time.sleep(60)"
+        )
+        parent = subprocess.Popen([sys.executable, "-c", command], stdout=subprocess.PIPE,
+                                  text=True, start_new_session=True)
+        child = None
+        try:
+            child = int(parent.stdout.readline().strip())
+            self.assertNotEqual(os.getpgid(child), parent.pid)
+            core.stop_process(parent)
+            self.assertIsNotNone(parent.poll())
+            # A stopped child may remain briefly as a zombie awaiting reaping.
+            status = Path(f"/proc/{child}/stat")
+            if status.exists():
+                fields = status.read_text().split()
+                self.assertEqual(fields[2], "Z", "Detached compiler should not remain running")
+        finally:
+            if child is not None:
+                try:
+                    os.killpg(child, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            if parent.poll() is None:
+                core.stop_process(parent)
+            parent.stdout.close()
 
     def test_no_game_shows_installer_without_network(self):
         with tempfile.TemporaryDirectory() as folder:
