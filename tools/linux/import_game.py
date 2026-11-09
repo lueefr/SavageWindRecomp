@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "nsp_vendor"))
@@ -101,6 +102,7 @@ def materialize(image, output):
     entries = index_romfs(image)
     ex.require(bool(entries), "Merged RomFS is empty")
     output.mkdir(parents=True)
+    last_notice = 0.0
     with image.open("rb") as source:
         for index, entry in enumerate(entries):
             rel = PurePosixPath(entry["path"])
@@ -117,9 +119,16 @@ def materialize(image, output):
                     ex.require(bool(block), "Truncated merged RomFS")
                     target.write(block)
                     remaining -= len(block)
-            progress(f"RomFS file {index + 1}/{len(entries)}: {rel} ({entry['size']:,} bytes)")
-            if index % 2000 == 0:
-                progress(f"Extracted {index}/{len(entries)} RomFS files...")
+                    now = time.monotonic()
+                    if now - last_notice >= 0.7:
+                        progress(f"RomFS file {index + 1}/{len(entries)}: {rel} "
+                                 f"({(entry['size'] - remaining) // (1 << 20)} / "
+                                 f"{max(1, entry['size'] // (1 << 20))} MiB)")
+                        last_notice = now
+            if (index + 1) % 64 == 0 or index + 1 == len(entries):
+                progress(f"RomFS file {index + 1}/{len(entries)}: {rel} ({entry['size']:,} bytes)")
+            if (index + 1) % 2000 == 0:
+                progress(f"Extracted {index + 1}/{len(entries)} RomFS files...")
     progress(f"Extracted {len(entries):,} RomFS files.")
 
 

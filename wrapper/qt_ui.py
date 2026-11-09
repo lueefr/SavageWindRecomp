@@ -162,7 +162,11 @@ class Window(QWidget):
 
     def install_files(self):
         if self.tabs.currentIndex() == 0:
-            self.start(self.source.text().strip())
+            folder = self.source.text().strip()
+            if not folder:
+                QMessageBox.warning(self, "Selecione uma pasta", "Escolha uma pasta contendo exefs/ e romfs/.")
+                return
+            self.start(folder)
             return
         paths = {key: field.text().strip() for key, field in self.packages.items()}
         if any(not value or not Path(value).is_file() for value in paths.values()):
