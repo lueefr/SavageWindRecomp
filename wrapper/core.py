@@ -654,10 +654,10 @@ def import_detail(title, done, total, count, total_count, unit, started):
         eta = "00:00"
     else:
         eta = "calculando..."
-    return (f"{title}: {ratio:.1f}%\\n"
+    return (f"{title}: {ratio:.1f}%\n"
             f"{title.split(':')[0]}: {ratio:.1f}% "
-            f"({done // CHUNK} / {total // CHUNK} MiB)\\n"
-            f"{count} de {total_count} {unit}\\n"
+            f"({done // CHUNK} / {total // CHUNK} MiB)\n"
+            f"{count} de {total_count} {unit}\n"
             f"ETA: {eta}")
 
 
@@ -704,15 +704,15 @@ def import_packages(root, paths, emit, cancel):
                                 selection.unregister(key.fileobj)
                                 continue
                             lines.extend(chunk)
-                            while b"\\n" in lines:
-                                raw, _, tail = lines.partition(b"\\n")
+                            while b"\n" in lines:
+                                raw, _, tail = lines.partition(b"\n")
                                 lines = bytearray(tail)
                                 line = raw.decode("utf-8", "replace").strip()
                                 if not line:
                                     continue
-                                logfile.write(line + "\\n")
-                                nca = re.match(r"NCA progress (base|update) (\\d+)/(\\d+)", line)
-                                romfs = re.match(r"RomFS file (\\d+)/(\\d+):", line)
+                                logfile.write(line + "\n")
+                                nca = re.match(r"NCA progress (base|update) (\d+)/(\d+)", line)
+                                romfs = re.match(r"RomFS file (\d+)/(\d+):", line)
                                 if nca and int(nca.group(3)):
                                     name = nca.group(1)
                                     if phase_name != name:
@@ -737,9 +737,9 @@ def import_packages(root, paths, emit, cancel):
                                         eta = "00:00"
                                     else:
                                         eta = "calculando..."
-                                    snapshot = (f"Extraindo RomFS: {100 * count / total:.1f}%\\n"
-                                                f"Arquivos extraídos: {count} / {total}\\n"
-                                                f"{count} de {total} arquivos\\n"
+                                    snapshot = (f"Extraindo RomFS: {100 * count / total:.1f}%\n"
+                                                f"Arquivos extraídos: {count} / {total}\n"
+                                                f"{count} de {total} arquivos\n"
                                                 f"ETA: {eta}")
                                     emit("live", snapshot, round(100 * count / total, 1))
                                 elif line.startswith(("Checking ", "Inspect", "Merging ",
