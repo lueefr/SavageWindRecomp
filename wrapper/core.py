@@ -44,29 +44,38 @@ def portable_root(env=None, explicit=None):
     return folder
 
 
-def portable_env(root, base=None):
+def game_files(root):
+    return Path(root) / "root"
+
+
+def game_data(root):
+    return Path(root) / "game"
+
+
+def portable_env(root, base=None, play=False):
     root = Path(root).resolve()
+    data = game_data(root)
     env = dict(os.environ if base is None else base)
-    # Do not silently follow links that could redirect saves or caches outside the AppImage folder.
-    for name in ("save", "cache", "fonts", "extracted", ".sw-wrapper", ".xdg"):
+    # Do not follow links to locations outside the portable folder.
+    for name in ("root", "game", "extracted", ".sw-wrapper"):
         if (root / name).is_symlink():
             raise InstallError(f"O armazenamento portátil contém um link externo: {name}")
-    for sub in ("cache/mesa", ".xdg/config", ".xdg/data", ".xdg/state", ".sw-wrapper/tmp"):
-        path = root / sub
+    for sub in ("save", "cache", "fonts", ".xdg", ".sw-wrapper", "cache/mesa",
+                ".xdg/config", ".xdg/data", ".xdg/state", ".sw-wrapper/tmp"):
+        path = data / sub
         if path.is_symlink():
-            raise InstallError(f"O armazenamento portátil contém um link externo: {sub}")
+            raise InstallError(f"O armazenamento portátil contém um link externo: game/{sub}")
         path.mkdir(parents=True, exist_ok=True)
     env.update({
-        # HOME is redirected only for the official game and its helpers, not the desktop UI.
-        # This also catches libraries which ignore XDG_* and write directly to ~/.
-        "HOME": str(root),
-        "SAVAGEWIND_DATA_ROOT": str(root),
-        "XDG_CONFIG_HOME": str(root / ".xdg/config"),
-        "XDG_DATA_HOME": str(root / ".xdg/data"),
-        "XDG_STATE_HOME": str(root / ".xdg/state"),
-        "XDG_CACHE_HOME": str(root / "cache"),
-        "MESA_SHADER_CACHE_DIR": str(root / "cache/mesa"),
-        "TMPDIR": str(root / ".sw-wrapper/tmp"),
+        # The official game writes all saves, settings, caches and runtime data here.
+        "HOME": str(data),
+        "SAVAGEWIND_DATA_ROOT": str(data),
+        "XDG_CONFIG_HOME": str(data / ".xdg/config"),
+        "XDG_DATA_HOME": str(data / ".xdg/data"),
+        "XDG_STATE_HOME": str(data / ".xdg/state"),
+        "XDG_CACHE_HOME": str(data / "cache"),
+        "MESA_SHADER_CACHE_DIR": str(data / "cache/mesa"),
+        "TMPDIR": str(data / ".sw-wrapper/tmp"),
     })
     # AppImage's injected paths and library overrides must not leak into a nested AppImage.
     for key in ("APPIMAGE", "APPDIR", "OWD", "LD_LIBRARY_PATH", "LD_PRELOAD",
@@ -76,6 +85,9 @@ def portable_env(root, base=None):
                 "SAVAGEWIND_SAVE_DIR", "SAVAGEWIND_SETTINGS",
                 "SAVAGEWIND_GAME_LIB"):
         env.pop(key, None)
+    if play:
+        # The recompilation output is stored apart from the original exefs/romfs.
+        env["SAVAGEWIND_GAME_LIB"] = str(data / "swgame.so")
     return env
 
 
@@ -248,9 +260,9 @@ def copy_game(root, source, emit, cancel):
     source = Path(source).expanduser().resolve()
     if not valid_game(source):
         raise InstallError("Selecione uma pasta contendo exefs/main, exefs/main.npdm e romfs/.")
-    target = root / "extracted"
-    if target.exists():
-        raise InstallError("A pasta extracted/ já existe. Não será sobrescrita.")
+    target = game_files(root)
+    if target.exists() or target.is_symlink():
+        raise InstallError("A pasta root/ já existe. Não será sobrescrita.")
     emit("stage", "Analisando os arquivos do jogo...", None)
     files = collect_files(source, cancel)
     total = sum(size for _, _, size in files)
@@ -436,11 +448,12 @@ def stop_process(proc):
         pass
 
 
-def compiled_code(root):
-    # An upstream build is usable only when it produced both pieces of its library.
-    # The id file is part of upstream's own compatibility check, not just a marker.
-    lib = Path(root) / "extracted/swgame.so"
-    identity = Path(root) / "extracted/swgame.so.id"
+def compiled_code(root, staging=False):
+    # The official compiler writes next to exefs/romfs. After success we keep
+    # the native library inside game/ and pass its path to the official loader.
+    location = game_files(root) if staging else game_data(root)
+    lib = location / "swgame.so"
+    identity = location / "swgame.so.id"
     if lib.is_symlink() or identity.is_symlink():
         return False
     try:
@@ -451,6 +464,22 @@ def compiled_code(root):
         return bool(value) and len(value) < 128 and all(32 <= b <= 126 for b in value)
     except OSError:
         return False
+
+
+def publish_code(root):
+    # Both files are on the same filesystem; reject links and incomplete pairs.
+    source = game_files(root)
+    dest = game_data(root)
+    if not compiled_code(root, staging=True):
+        raise InstallError("O compilador não gerou uma biblioteca nativa completa em root/.")
+    if dest.is_symlink():
+        raise InstallError("game/ não pode ser um link simbólico.")
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in ("swgame.so", "swgame.so.id"):
+        if (dest / name).is_symlink():
+            raise InstallError("game/ contém um link simbólico que impede a publicação segura.")
+    for name in ("swgame.so", "swgame.so.id"):
+        os.replace(source / name, dest / name)
 
 
 def build_game(root, binary, emit, cancel):
@@ -464,7 +493,7 @@ def build_game(root, binary, emit, cancel):
     # A completed compile and a valid library can recover from a missing READY
     # message or a failure after linking, but never override explicit NOT READY.
     with open(log_path, "w", encoding="utf-8") as logfile:
-        proc = subprocess.Popen([str(binary), str(root / "extracted")],
+        proc = subprocess.Popen([str(binary), str(game_files(root))],
                                 cwd=root, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, start_new_session=True, bufsize=0)
         # Nice the compiler process without a preexec_fn (unsafe in a threaded Qt/GTK host).
@@ -529,7 +558,7 @@ def build_game(root, binary, emit, cancel):
                     # exiting the test hook. Detect this and relaunch through
                     # the portable path rather than waiting until the 1h timeout.
                     if entered_game:
-                        if compiled_code(root):
+                        if compiled_code(root, staging=True):
                             logfile.write("[wrapper] O executável oficial iniciou o jogo durante a preparação. "
                                           "Reiniciando pelo fluxo portátil.\n")
                             emit("log", "O executável oficial entrou no jogo. Reiniciando pelo portable...", None)
@@ -547,7 +576,7 @@ def build_game(root, binary, emit, cancel):
         proc.wait()
         if output:
             logfile.write(output.decode("utf-8", errors="replace"))
-        artifact_ok = compiled_code(root)
+        artifact_ok = compiled_code(root, staging=True)
         accepted = artifact_ok and not not_ready and (
             ready and proc.returncode == 0 or compiled or entered_game)
         logfile.write(f"[wrapper] Finalizado em {time.monotonic() - started:.1f}s; "
@@ -573,6 +602,8 @@ def build_game(root, binary, emit, cancel):
     if not ready:
         emit("log", "Compilação recuperada: o código nativo foi concluído, "
                     "embora o upstream não tenha retornado a confirmação READY.", None)
+    publish_code(root)
+    emit("log", "Biblioteca recompilada movida para game/swgame.so.", None)
     emit("progress", "Código nativo validado. Iniciando o jogo...", 100)
 
 
@@ -584,8 +615,8 @@ def import_packages(root, paths, emit, cancel):
                           for key in ("base", "update", "keys"))
     if base == update or not all(p.is_file() for p in (base, update, keys)):
         raise InstallError("Selecione os arquivos base NSP/XCI, atualização NSP e prod.keys válidos.")
-    if (root / "extracted").exists() or (root / "extracted").is_symlink():
-        raise InstallError("A pasta extracted/ já existe. Não será sobrescrita.")
+    if game_files(root).exists() or game_files(root).is_symlink():
+        raise InstallError("A pasta root/ já existe. Não será sobrescrita.")
     bindir = os.environ.get("SAVAGEWIND_WRAPPER_BINDIR")
     if not bindir:
         raise InstallError("Os utilitários de importação não estão disponíveis nesta execução.")
@@ -651,7 +682,7 @@ def import_packages(root, paths, emit, cancel):
         check_cancel(cancel)
         if proc.returncode != 0 or not valid_game(staged):
             raise InstallError(f"A importação falhou. Consulte {log_path}.")
-        os.replace(staged, root / "extracted")
+        os.replace(staged, game_files(root))
         emit("progress", "Pacotes importados e verificados.", 100)
     finally:
         shutil.rmtree(temp, ignore_errors=True)
@@ -712,12 +743,16 @@ class Pipeline:
             self.status("reveal", "Recuperando uma atualização interrompida...")
             self.status("stage", "Recuperando uma atualização interrompida...")
             pending.restore()
-        from .migration import legacy_folder, move_data
+        from .migration import legacy_folder, move_data, organize_portable
+        organize_portable(root, self.status, self.cancel)
         state = read_state(root)
         legacy = legacy_folder(root)
         if legacy is not None and state.get("ignored_legacy") != str(legacy):
             collisions = [item.name for item in legacy.iterdir()
-                          if (root / item.name).exists() or (root / item.name).is_symlink()]
+                          if (game_files(root) if item.name == "extracted"
+                              else game_data(root) / item.name).exists()
+                          or (game_files(root) if item.name == "extracted"
+                              else game_data(root) / item.name).is_symlink()]
             if collisions:
                 self.status("log", "A migração antiga precisa de revisão: arquivos com "
                                   "os mesmos nomes já existem no destino (" +
@@ -725,18 +760,19 @@ class Pipeline:
             elif self.ask(f"Instalação anterior encontrada em {legacy}.\nDeseja mover os arquivos, saves e configurações para a pasta deste AppImage?"):
                 self.status("reveal", "Migrando os arquivos da instalação anterior...")
                 move_data(legacy, root, self.status, self.cancel)
+                organize_portable(root, self.status, self.cancel)
             else:
                 state["ignored_legacy"] = str(legacy)
                 write_state(root, state)
         portable_env(root)
         state = read_state(root)
-        if source and valid_game(root / "extracted"):
+        if source and valid_game(game_files(root)):
             raise InstallError("O jogo já está instalado nesta pasta. Seus arquivos não serão substituídos.")
-        if not valid_game(root / "extracted") and not source:
+        if not valid_game(game_files(root)) and not source:
             return "setup"
         # Check availability before copying many GiB of game files.
-        if source and (root / "extracted").exists() and not valid_game(root / "extracted"):
-            raise InstallError("A pasta extracted/ já existe, mas está incompleta. Não será sobrescrita.")
+        if source and game_files(root).exists() and not valid_game(game_files(root)):
+            raise InstallError("A pasta root/ já existe, mas está incompleta. Não será sobrescrita.")
         self.status("stage", "Procurando atualizações oficiais...")
         installed = local_release(root, state)
         release_error = None
@@ -775,7 +811,7 @@ class Pipeline:
                 raise InstallError(
                     "Não existe AppImage oficial instalado e nenhuma release compatível pôde ser obtida.")
             check_cancel(self.cancel)
-            if not valid_game(root / "extracted"):
+            if not valid_game(game_files(root)):
                 if isinstance(source, dict):
                     import_packages(root, source, self.status, self.cancel)
                 elif source:
@@ -787,8 +823,7 @@ class Pipeline:
             target = cpu_target()
             cpu_changed = bool(state.get("built_cpu") and state["built_cpu"] != target)
             if (key != state.get("official_digest") or cpu_changed or
-                    not (root / "extracted/swgame.so").is_file() or
-                    not (root / "extracted/swgame.so.id").is_file()):
+                    not compiled_code(root)):
                 self.status("reveal", "Preparando o código nativo do jogo...")
                 if cpu_changed:
                     self.status("stage", "CPU diferente detectada; preparando código nativo compatível...")
@@ -802,8 +837,8 @@ class Pipeline:
                 write_state(root, state)
             self.status("stage", "Iniciando o Savage Wind...")
             with (root / ".sw-wrapper/game.log").open("ab") as logfile:
-                process = subprocess.Popen([str(installed), "--play", str(root / "extracted")],
-                                           env=portable_env(root), cwd=root,
+                process = subprocess.Popen([str(installed), "--play", str(game_files(root))],
+                                           env=portable_env(root, play=True), cwd=root,
                                            start_new_session=True, stdout=subprocess.DEVNULL,
                                            stderr=logfile, pass_fds=(self._lock_fd,))
             if rollback:
