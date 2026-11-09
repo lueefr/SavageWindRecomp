@@ -141,6 +141,41 @@ class LayoutTests(unittest.TestCase):
             self.assertEqual(core.read_state(root)["built_digest"], digest)
             self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"precious save")
 
+    def test_recover_silent_success_from_staging_without_rebuild(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".sw-wrapper").mkdir()
+            game = root / "root"
+            (game / "exefs").mkdir(parents=True)
+            (game / "romfs").mkdir()
+            (game / "exefs/main").write_bytes(b"NSO0")
+            (game / "exefs/main.npdm").write_bytes(b"META")
+            official = root / "SavageWind-official.AppImage"
+            official.write_bytes(b"official stub")
+            (game / "swgame.so").write_bytes(b"compiled native library")
+            (game / "swgame.so.id").write_text("valid-id\\n")
+            (root / ".sw-wrapper/build.log").write_text(
+                "[wrapper] Finalizado em 1356.7s; exit=0; ready=False; "
+                "not_ready=False; build_done=False; game_started=False; "
+                "artifacts=True; accepted=False.\\n")
+            digest = "e" * 64
+            core.write_state(root, {
+                "official_digest": digest,
+                "official_size": official.stat().st_size,
+                "official_mtime_ns": official.stat().st_mtime_ns,
+            })
+            with mock.patch.object(core, "fetch_latest", side_effect=OSError("offline")):
+                with mock.patch.object(core, "build_game") as rebuild:
+                    with mock.patch.object(core.subprocess, "Popen") as launch:
+                        launch.return_value.pid = 88
+                        answer = core.Pipeline(root, lambda *_: None, lambda *_: False,
+                                               threading.Event()).run()
+            self.assertEqual(answer, "launched")
+            rebuild.assert_not_called()
+            self.assertTrue((root / "game/swgame.so").exists())
+            self.assertFalse((root / "root/swgame.so").exists())
+            self.assertEqual(core.read_state(root)["built_digest"], digest)
+
     def test_unconfirmed_native_code_does_not_skip_compilation(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
