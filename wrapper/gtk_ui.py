@@ -191,7 +191,7 @@ class Window(Gtk.Window):
             return
         self.live_mark = None
         if buf.get_char_count():
-            buf.insert(buf.get_end_iter(), "\\n")
+            buf.insert(buf.get_end_iter(), "\n")
         if live:
             self.live_mark = buf.create_mark(None, buf.get_end_iter(), True)
         buf.insert(buf.get_end_iter(), message)
