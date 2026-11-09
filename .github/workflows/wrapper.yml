@@ -7,6 +7,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: portable-wrapper-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   tests:
     runs-on: ubuntu-24.04
@@ -26,6 +29,8 @@ jobs:
   appimage:
     needs: tests
     if: github.event_name != 'pull_request'
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -51,10 +56,29 @@ jobs:
           test -x squashfs-root/usr/bin/swqt/swqt
           test -x squashfs-root/usr/bin/swextract
           test -x squashfs-root/usr/bin/hactool
+          squashfs-root/usr/bin/swextract --help >/dev/null
           test -f squashfs-root/usr/share/wrapper/core.py
           test -f squashfs-root/usr/share/wrapper/rollback.py
           test -f squashfs-root/usr/share/wrapper/migration.py
           LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib" squashfs-root/usr/bin/hactool 2>&1 | head -10 || true
+      - name: Publish directly downloadable portable preview
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/portable-native-wrapper'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=portable-preview
+          asset=build/dist/SavageWind-Portable-x86_64.AppImage
+          printf '## Savage Wind Portable (Linux)\n\n' > /tmp/portable-notes.md
+          printf 'Native Qt/GTK portable wrapper. Build from commit %s.\n\n' "$GITHUB_SHA" >> /tmp/portable-notes.md
+          printf 'Bundled NSP/XCI importer; no game, keys or official game binary included.\n' >> /tmp/portable-notes.md
+          printf 'SHA-256: %s\n' "$(sha256sum "$asset" | cut -d' ' -f1)" >> /tmp/portable-notes.md
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$asset" --clobber
+            gh release edit "$tag" --title "Savage Wind Portable (Linux preview)" --notes-file /tmp/portable-notes.md --prerelease
+          else
+            gh release create "$tag" "$asset" --target "$GITHUB_SHA" --title "Savage Wind Portable (Linux preview)" --notes-file /tmp/portable-notes.md --prerelease
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: SavageWind-Portable-x86_64

@@ -1,59 +1,76 @@
-# Savage Wind Portable (Linux)
+# Savage Wind: instalador portátil nativo para Linux
 
-A separate wrapper for the **official**, unmodified Savage Wind AppImage.
-It does not compile or ship another fork of the game runtime.
+Este instalador usa a release oficial do [Savage Wind](https://github.com/Revivedx/SavageWindRecomp) sem modificá-la.
+O AppImage desta branch é um *wrapper* leve com interface Qt no Plasma e GTK 3/Adwaita no GNOME.
+Não inclui jogos, arquivos Nintendo Switch ou chaves.
 
-## Portable data
+## Instalação
 
-The physical directory containing `SavageWind-Portable-x86_64.AppImage` is the
-data root. The official game creates all its files there:
+Baixe o AppImage na [release de prévia portátil](https://github.com/lueefr/SavageWindRecomp/releases/tag/portable-preview),
+coloque-o na pasta em que pretende manter os dados e execute-o.
 
-```text
-Games/SavageWind/
-  SavageWind-Portable-x86_64.AppImage
-  SavageWind-official.AppImage
-  extracted/                   # the player’s own ExeFS and RomFS
-  save/                        # game saves
-  cache/                       # shader and Mesa caches
-  savagewind.ini               # upstream settings
-  .xdg/                        # XDG data, config and state
-  .sw-wrapper/                 # installer state, logs and temporary files
-```
+Na primeira execução, escolha uma pasta contendo exefs/ e romfs/ do seu próprio dump atualizado
+ou a aba NSP/XCI para selecionar jogo base, atualização NSP e prod.keys.
+A barra de progresso informa a etapa real de importação, download e compilação.
+O log fica recolhido por padrão. Cancelar encerra o processo de importação ou compilação,
+inclusive seus subprocessos, e descarta os temporários de uma instalação incompleta.
 
-`SAVAGEWIND_DATA_ROOT`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`,
-`XDG_STATE_HOME`, `XDG_CACHE_HOME`, `MESA_SHADER_CACHE_DIR` and `TMPDIR` are
-set before launching the official game. There is **no fallback** to
-`~/.local/share/savagewind`: the physical AppImage directory must be writable.
-An existing older installation there is never deleted automatically.
+A instalação utiliza a pasta **real** do próprio wrapper AppImage (não a pasta temporária montada pelo AppImage).
+A estrutura é aproximadamente:
 
-When `extracted/` is ready, the game is launched directly. On each run, the
-wrapper checks official stable **and** prerelease versions and asks before
-replacing an installed version. Updates are streamed with an SHA-256 check
-and atomically installed, without touching saves. The compiler runs only
-when a different official binary or missing game code requires it.
+    Jogos/SavageWind/
+      SavageWind-Portable-x86_64.AppImage
+      SavageWind-official.AppImage
+      extracted/exefs/, extracted/romfs/, extracted/swgame.so
+      save/, cache/, savagewind.ini
+      .sw-wrapper/ (estados, registros, temporários, rollback)
+      .xdg/ (outros dados XDG usados por bibliotecas)
 
-## Native interface
+O wrapper define SAVAGEWIND_DATA_ROOT, HOME, XDG_CONFIG_HOME, XDG_DATA_HOME,
+XDG_STATE_HOME, XDG_CACHE_HOME, MESA_SHADER_CACHE_DIR e TMPDIR **antes**
+de executar o upstream e seus auxiliares. O novo fluxo não escreve em
+~/.local/share/savagewind. Se encontrar dados de uma instalação anterior nesse
+caminho, oferece migração com consentimento; nunca os apaga ou sobrescreve silenciosamente.
 
-The setup follows the TotK-PC-Recomp form and progress workflow: input folder,
-stage descriptions, a progress bar, expandable log (collapsed by default)
-and Cancel. Qt Widgets are used on KDE Plasma; GTK on GNOME.
+Para pedir a janela do instalador mesmo com o jogo já instalado:
 
-**Current limitation:** import of already extracted `exefs/` and `romfs/`
-is supported. Direct NSP/XCI merging is not implemented yet and must not be
-presented as available.
+    ./SavageWind-Portable-x86_64.AppImage --config
 
-## Build
+## Atualizações e execução
 
-```sh
-python -m pip install PySide6==6.10.0 pyinstaller==6.22.3
-bash tools/linux/build_wrapper.sh x86_64
-```
+A cada abertura, consulta as releases publicadas no repositório oficial,
+incluindo **pré-releases**, e compara o SHA-256 do AppImage. Quando encontra
+atualização, pergunta se deseja instalá-la. O download tem progresso,
+pode ser cancelado e só substitui a cópia gerenciada após validação de tamanho
+e hash. A busca por AppImages já baixados se limita a pastas comuns e à pasta
+do wrapper, sem varreduras custosas do disco. Apenas binários oficiais
+com hash correspondente são reaproveitados.
 
-Qt is packaged with PyInstaller in **onedir** mode so the application does
-not extract a onefile Python runtime at each launch. GNOME uses the host
-Python 3 + PyGObject/GTK 3 when installed; otherwise the bundled Qt GUI
-is used. The installed game is downloaded on first launch; it is not bundled
-inside the small launcher AppImage.
+Se a versão não mudou e swgame.so já está preparado para ela, pula a recompilação.
+Quando ela é necessária, mostra progresso indeterminado, etapa e logs reais.
+O compilador recebe prioridade de agendamento menor para preservar a
+responsividade do desktop, mas ainda pode consumir CPU e RAM em máquinas lentas.
+O upstream é iniciado diretamente com --play, sem mostrar o menu dele.
 
-To run from source, use `python3 -m wrapper.launch --root DIR`. For tests:
-`python3 -m unittest discover -s wrapper/tests -v`.
+Em caso de falha após iniciar a troca de versão, a atualização guarda o AppImage
+anterior e o código nativo compilado em .sw-wrapper/rollback/ e recupera os
+arquivos na execução seguinte. Saves e configurações não participam dessa troca.
+
+O importador requer espaço livre significativo para os dados temporários de BKTR
+e RomFS. Os pacotes NSP/XCI são processados localmente com o hactool fixado
+e validadores provenientes de MacNativeGames (MIT); o arquivo prod.keys é lido
+na importação e não é incorporado ao AppImage.
+
+## Limitações e testes
+
+A instalação portátil não faz varredura recursiva em todos os discos e não executa
+AppImages antigos não verificados. Pode ser necessário selecionar manualmente
+seus próprios arquivos no primeiro uso.
+
+A preparação de swgame.so usa um mecanismo de montagem/teste já presente no upstream,
+mas ainda não é uma API estável garantida por seus mantenedores. Testes unitários
+não substituem validação com um dump próprio do jogo nem comprovam desempenho em
+todos os desktops.
+
+Os testes sintéticos estão em wrapper/tests/ e tools/linux/test_import_game.py.
+O workflow .github/workflows/wrapper.yml também gera e verifica o AppImage Linux.
