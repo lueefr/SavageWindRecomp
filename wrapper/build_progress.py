@@ -63,11 +63,12 @@ class BuildMonitor:
     def gen_status(self, name):
         path = self.work / f"gen_{name}.log"
         try:
-            size = path.stat().st_size
+            stat = path.stat()
+            size = stat.st_size
             if size == 0:
-                return self.logs.get(name, (0, 0, 0))
+                return self.logs.get(name, (0, 0, 0))[:3]
             cached = self.logs.get(name)
-            if cached and cached[3] == size:
+            if cached and cached[3:] == (size, stat.st_mtime_ns):
                 return cached[:3]
             with path.open("rb") as file:
                 file.seek(max(0, size - 16384))
@@ -77,10 +78,10 @@ class BuildMonitor:
                 match = matches[-1]
                 done, total, chunks = (int(match.group(i)) for i in (1, 2, 3))
                 if total > 0 and 0 <= done <= total and chunks >= 0:
-                    self.logs[name] = (done, total, chunks, size)
-            return self.logs.get(name, (0, 0, 0, 0))[:3]
+                    self.logs[name] = (done, total, chunks, size, stat.st_mtime_ns)
+            return self.logs.get(name, (0, 0, 0, 0, 0))[:3]
         except OSError:
-            return self.logs.get(name, (0, 0, 0, 0))[:3]
+            return self.logs.get(name, (0, 0, 0, 0, 0))[:3]
 
     def compiled(self):
         objects = 0

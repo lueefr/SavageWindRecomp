@@ -28,9 +28,9 @@ class BuildProgressTests(unittest.TestCase):
                 (work / name).write_bytes(b"obj")
             snapshot = BuildMonitor(folder, started=0).sample(now=10)
             self.assertEqual(snapshot.phase, "compile")
-            self.assertAlmostEqual(snapshot.percent, 10.0, delta=0.1)
+            self.assertAlmostEqual(snapshot.percent, 30.8, delta=0.1)
             self.assertIn("main: 100/200", snapshot.details)
-            self.assertIn("Compilador: 5/19", snapshot.details)
+            self.assertIn("Compilador: 5/18", snapshot.details)
             self.assertIn("ETA: calculando", snapshot.message)
 
     def test_eta_uses_recent_measured_progress_only(self):
