@@ -65,6 +65,17 @@ class BuildHandshakeTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("exit=1", log)
 
+    def test_silent_success_with_new_native_pair_is_accepted(self):
+        ok, _, log = self.run_build(())
+        self.assertTrue(ok)
+        self.assertIn("newly_built=True", log)
+        self.assertIn("accepted=True", log)
+
+    def test_silent_nonzero_exit_is_rejected(self):
+        ok, message, log = self.run_build((), exit_code=1)
+        self.assertFalse(ok)
+        self.assertIn("accepted=False", log)
+
     def test_explicit_not_ready_is_not_ignored(self):
         ok, message, log = self.run_build(("[gamebuild] done in 30s",
                                             "[launcher] setup: game invalid -> NOT READY"))
@@ -77,7 +88,7 @@ class BuildHandshakeTests(unittest.TestCase):
         self.assertIn("swgame.so", message)
 
     def test_unconfirmed_build_is_not_assumed_good(self):
-        ok, message, log = self.run_build(("[gamebuild] generator starting",))
+        ok, message, log = self.run_build(("[gamebuild] generator starting",), exit_code=1)
         self.assertFalse(ok)
         self.assertIn("confirmação", message)
 
