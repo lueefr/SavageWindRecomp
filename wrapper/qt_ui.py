@@ -103,6 +103,10 @@ class Window(QWidget):
         self.toggle.clicked.connect(self.toggle_log)
         buttons.addWidget(self.toggle)
         buttons.addStretch(1)
+        self.back_button = QPushButton("Voltar")
+        self.back_button.clicked.connect(self.back)
+        self.back_button.hide()
+        buttons.addWidget(self.back_button)
         self.cancel_button = QPushButton("Cancelar")
         self.cancel_button.clicked.connect(self.abort)
         buttons.addWidget(self.cancel_button)
@@ -177,6 +181,13 @@ class Window(QWidget):
         self.cancel_button.setEnabled(False)
         self.stage.setText("Cancelando a operação...")
 
+    def back(self):
+        if self.running:
+            return
+        self.progress_box.hide()
+        self.form.show()
+        self.back_button.hide()
+
     def closeEvent(self, event):
         if self.running:
             self.abort()
@@ -194,6 +205,7 @@ class Window(QWidget):
         self.running = True
         self.form.hide()
         self.progress_box.show()
+        self.back_button.hide()
         self.cancel_button.setEnabled(True)
         self.bar.setRange(0, 0)
         self.log.clear()
@@ -259,10 +271,12 @@ class Window(QWidget):
                 else:
                     self.stage.setText("Operação cancelada.")
                     self.cancel_button.setEnabled(False)
+                    self.back_button.show()
             elif event[0] == "error":
                 self.running = False
                 self.cancel_button.setEnabled(False)
                 self.stage.setText("Não foi possível concluir.")
+                self.back_button.show()
                 self.log.appendPlainText("ERRO: " + event[1])
                 QMessageBox.critical(self, "Savage Wind", event[1])
 

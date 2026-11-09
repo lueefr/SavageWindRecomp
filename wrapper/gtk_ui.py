@@ -102,6 +102,9 @@ class Window(Gtk.Window):
         self.log_expander.connect("notify::expanded", lambda obj, _: obj.set_label(
             "Ocultar log" if obj.get_expanded() else "Mostrar log"))
         buttons.pack_start(self.log_expander, True, True, 0)
+        self.back_button = Gtk.Button(label="Voltar")
+        self.back_button.connect("clicked", self.back)
+        buttons.pack_start(self.back_button, False, False, 0)
         self.cancel_button = Gtk.Button(label="Cancelar")
         self.cancel_button.connect("clicked", self.abort)
         buttons.pack_start(self.cancel_button, False, False, 0)
@@ -183,6 +186,12 @@ class Window(Gtk.Window):
         self.cancel_button.set_sensitive(False)
         self.stage.set_text("Cancelando a operação...")
 
+    def back(self, *_):
+        if self.running:
+            return
+        self.progress_box.hide()
+        self.form.show_all()
+
     def close_window(self, *_):
         if self.running:
             self.abort()
@@ -196,6 +205,7 @@ class Window(Gtk.Window):
         self.cancel_event = threading.Event()
         self.form.hide()
         self.progress_box.show_all()
+        self.back_button.hide()
         self.log_expander.set_expanded(False)
         self.cancel_button.set_sensitive(True)
         self.stage.set_text("Preparando...")
@@ -259,10 +269,12 @@ class Window(Gtk.Window):
                 else:
                     self.stage.set_text("Operação cancelada.")
                     self.cancel_button.set_sensitive(False)
+                    self.back_button.show()
             elif event[0] == "error":
                 self.running = False
                 self.cancel_button.set_sensitive(False)
                 self.stage.set_text("Não foi possível concluir.")
+                self.back_button.show()
                 buf = self.log.get_buffer()
                 buf.insert(buf.get_end_iter(), "ERRO: " + event[1] + "\n")
                 self.alert(event[1])
