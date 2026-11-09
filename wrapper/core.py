@@ -671,6 +671,7 @@ def import_packages(root, paths, emit, cancel):
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     start_new_session=True, bufsize=0)
             lines = bytearray()
+            nca_logged = {}
             with selectors.DefaultSelector() as selection:
                 selection.register(proc.stdout, selectors.EVENT_READ)
                 try:
@@ -705,6 +706,12 @@ def import_packages(root, paths, emit, cancel):
                                         label = "base" if match.group(1) == "base" else "atualização"
                                         percent = round(100 * int(match.group(2)) / int(match.group(3)), 1)
                                         emit("progress", f"Copiando NCA {label}: {percent:.1f}%", percent)
+                                        milestone = int(percent // 10)
+                                        if milestone > nca_logged.get(label, -1):
+                                            nca_logged[label] = milestone
+                                            emit("log", f"NCA {label}: {percent:.1f}% "
+                                                        f"({int(match.group(2)) // CHUNK} / "
+                                                        f"{int(match.group(3)) // CHUNK} MiB)", None)
                                     else:
                                         emit("log", line, None)
                                 elif line.startswith(("Checking ", "Inspect", "Merging ",
