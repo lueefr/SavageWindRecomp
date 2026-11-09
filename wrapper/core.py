@@ -16,6 +16,8 @@ import time
 import urllib.error
 import urllib.request
 
+from .build_progress import BuildMonitor
+
 RELEASES = "https://api.github.com/repos/Revivedx/SavageWindRecomp/releases?per_page=100"
 ASSETS = "https://github.com/Revivedx/SavageWindRecomp/releases/download/"
 CHUNK = 1024 * 1024
@@ -452,7 +454,8 @@ def build_game(root, binary, emit, cancel):
             pass
         output, ready = bytearray(), False
         started = time.monotonic()
-        last_heartbeat = started
+        monitor = BuildMonitor(root, started=started)
+        last_heartbeat, last_log, build_active = started, started, False
         with selectors.DefaultSelector() as sel:
             sel.register(proc.stdout, selectors.EVENT_READ)
             try:
@@ -462,10 +465,19 @@ def build_game(root, binary, emit, cancel):
                         raise InstallError("A recompilação ultrapassou uma hora.")
                     events = sel.select(timeout=0.35)
                     now = time.monotonic()
-                    if now - last_heartbeat >= 2:
-                        seconds = int(now - started)
-                        emit("stage", f"Recompilando código nativo: {seconds // 60} min {seconds % 60:02d} s. "
-                                      "O compilador oficial está em execução.", None)
+                    if now - last_heartbeat >= 1:
+                        progress = monitor.sample(now) if build_active else None
+                        if progress:
+                            emit("progress", progress.message, progress.percent)
+                            if now - last_log >= 5:
+                                message = "[progresso] " + progress.details
+                                logfile.write(message + "\n")
+                                logfile.flush()
+                                emit("log", message, None)
+                                last_log = now
+                        else:
+                            seconds = int(now - started)
+                            emit("stage", f"Iniciando o recompilador oficial · {seconds}s", None)
                         last_heartbeat = now
                     for key, _ in events:
                         block = os.read(key.fd, 8192)
@@ -480,9 +492,11 @@ def build_game(root, binary, emit, cancel):
                             logfile.write(line + "\n")
                             if "-> READY" in line:
                                 ready = True
+                            if "[gamebuild] generator " in line:
+                                build_active = True
                             if line:
                                 emit("log", line, None)
-                                if any(word in line for word in ("[gamebuild]", "Reading the game code", "Recompiling", "linking")):
+                                if not build_active and "[gamebuild]" in line:
                                     emit("stage", line[:160], None)
                     if proc.poll() is not None and not sel.get_map():
                         break
@@ -492,6 +506,8 @@ def build_game(root, binary, emit, cancel):
         proc.wait()
         if output:
             logfile.write(output.decode("utf-8", errors="replace"))
+        logfile.write(f"[progresso] Processo finalizado em {time.monotonic() - started:.1f}s. "
+                      f"Exit code: {proc.returncode}; READY={ready}.\n")
     if (proc.returncode or not ready or not (root / "extracted/swgame.so").is_file()
             or not (root / "extracted/swgame.so.id").is_file()):
         raise InstallError(f"A recompilação falhou. Consulte {log_path}.")

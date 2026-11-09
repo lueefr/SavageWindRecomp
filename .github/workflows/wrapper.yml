@@ -65,6 +65,7 @@ jobs:
           SSL_CERT_FILE=/dev/null SSL_CERT_DIR=/nonexistent \
           SAVAGEWIND_CA_BUNDLE="$PWD/squashfs-root/usr/share/wrapper/ca-bundle.pem" \
           squashfs-root/usr/bin/swqt/swqt --tls-selftest
+          test -f squashfs-root/usr/share/wrapper/build_progress.py
           test -f squashfs-root/usr/share/wrapper/core.py
           test -f squashfs-root/usr/share/wrapper/rollback.py
           test -f squashfs-root/usr/share/wrapper/migration.py

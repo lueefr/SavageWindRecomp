@@ -60,7 +60,13 @@ do wrapper, sem varreduras custosas do disco. Apenas binários oficiais
 com hash correspondente são reaproveitados.
 
 Se a versão não mudou e swgame.so já está preparado para ela, pula a recompilação.
-Quando ela é necessária, mostra progresso indeterminado, etapa e logs reais.
+Quando ela é necessária, acompanha os registros temporários do gerador oficial e os objetos nativos compilados,
+mostrando módulos, funções convertidas, partes geradas, unidades compiladas e a vinculação final de swgame.so.
+A barra apresenta uma **porcentagem aproximada** derivada dessas medições. O ETA dinâmico só aparece após
+acumular amostras suficientes; ele estima o tempo até a vinculação, e não promete um horário exato de término.
+Os detalhes são registrados em .sw-wrapper/build.log (linhas [progresso]) e no log expansível da interface.
+A leitura é limitada a uma janela do final de cada log e a uma amostragem da pasta temporária, evitando
+varreduras recursivas ou consumo excessivo de CPU.
 O compilador recebe prioridade de agendamento menor para preservar a
 responsividade do desktop, mas ainda pode consumir CPU e RAM em máquinas lentas.
 O upstream é iniciado diretamente com --play, sem mostrar o menu dele.

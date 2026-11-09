@@ -38,7 +38,7 @@ ldd "$APPDIR/usr/bin/hactool" | awk '/=> \/\// { print $3 }' | while read -r lib
     case "$(basename "$lib")" in libmbed*.so*) cp -L "$lib" "$APPDIR/usr/lib/" ;; esac
 done
 patchelf --set-rpath '$ORIGIN/../lib' "$APPDIR/usr/bin/hactool"
-cp wrapper/__init__.py wrapper/core.py wrapper/launch.py wrapper/gtk_ui.py wrapper/migration.py wrapper/rollback.py "$APPDIR/usr/share/wrapper/"
+cp wrapper/__init__.py wrapper/core.py wrapper/build_progress.py wrapper/launch.py wrapper/gtk_ui.py wrapper/migration.py wrapper/rollback.py "$APPDIR/usr/share/wrapper/"
 cp tools/linux/wrapper_AppRun "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
 cp tools/linux/wrapper.desktop "$APPDIR/savagewind-portable.desktop"
