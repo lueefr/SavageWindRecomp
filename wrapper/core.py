@@ -544,9 +544,20 @@ class Pipeline:
             self.status("stage", "Recuperando uma atualização interrompida...")
             pending.restore()
         from .migration import legacy_folder, move_data
+        state = read_state(root)
         legacy = legacy_folder(root)
-        if legacy is not None and self.ask(f"Instalação anterior encontrada em {legacy}.\nDeseja mover os arquivos, saves e configurações para a pasta deste AppImage?"):
-            move_data(legacy, root, self.status, self.cancel)
+        if legacy is not None and state.get("ignored_legacy") != str(legacy):
+            collisions = [item.name for item in legacy.iterdir()
+                          if (root / item.name).exists() or (root / item.name).is_symlink()]
+            if collisions:
+                self.status("log", "A migração antiga precisa de revisão: arquivos com "
+                                  "os mesmos nomes já existem no destino (" +
+                                  ", ".join(collisions[:5]) + ").")
+            elif self.ask(f"Instalação anterior encontrada em {legacy}.\nDeseja mover os arquivos, saves e configurações para a pasta deste AppImage?"):
+                move_data(legacy, root, self.status, self.cancel)
+            else:
+                state["ignored_legacy"] = str(legacy)
+                write_state(root, state)
         portable_env(root)
         state = read_state(root)
         if source and valid_game(root / "extracted"):
