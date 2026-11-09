@@ -119,6 +119,7 @@ class Window(QWidget):
         self.timer.timeout.connect(self.pump)
         self.timer.start(75)
         if autoplay and (valid_game(self.root / "extracted") or legacy_folder(self.root)):
+            self.form.hide()
             QTimer.singleShot(0, lambda: self.start(None))
 
     def mark_step(self, stage):
@@ -136,7 +137,8 @@ class Window(QWidget):
             return 3
         if any(x in title for x in ("atualiza", "baixando", "versão", "oficial")):
             return 2
-        if any(x in title for x in ("copiando", "arquivo", "analisando", "preparando exefs")):
+        if any(x in title for x in ("copiando", "arquivo", "analisando", "preparando exefs",
+                                     "importando", "pacotes", "romfs", "exefs", "chaves")):
             return 1
         if "iniciando o savage wind" in title:
             return 4

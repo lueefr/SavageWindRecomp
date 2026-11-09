@@ -99,6 +99,8 @@ class Window(Gtk.Window):
         self.progress_box.pack_start(self.bar, False, False, 0)
         buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.log_expander = Gtk.Expander(label="Mostrar log")
+        self.log_expander.connect("notify::expanded", lambda obj, _: obj.set_label(
+            "Ocultar log" if obj.get_expanded() else "Mostrar log"))
         buttons.pack_start(self.log_expander, True, True, 0)
         self.cancel_button = Gtk.Button(label="Cancelar")
         self.cancel_button.connect("clicked", self.abort)
@@ -127,7 +129,8 @@ class Window(Gtk.Window):
             return 3
         if any(x in lower for x in ("atualiza", "baixando", "versão", "oficial")):
             return 2
-        if any(x in lower for x in ("copiando", "arquivo", "analisando")):
+        if any(x in lower for x in ("copiando", "arquivo", "analisando", "importando",
+                                     "pacotes", "romfs", "exefs", "chaves")):
             return 1
         if "iniciando o savage wind" in lower:
             return 4
@@ -275,6 +278,7 @@ def run(root, selftest=False, autoplay=True):
     window.show_all()
     window.progress_box.hide()
     if autoplay and (valid_game(Path(root) / "extracted") or legacy_folder(root)):
+        window.form.hide()
         GLib.idle_add(lambda: window.start(None) or False)
     Gtk.main()
     return 0
