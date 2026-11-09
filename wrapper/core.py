@@ -73,7 +73,8 @@ def portable_env(root, base=None):
                 "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH", "GTK_PATH",
                 "PYTHONPATH", "PYTHONHOME", "SAVAGEWIND_LAUNCHER_EXTRACT",
                 "SAVAGEWIND_SETUP_FROM", "SAVAGEWIND_NO_LAUNCHER",
-                "SAVAGEWIND_SAVE_DIR", "SAVAGEWIND_SETTINGS"):
+                "SAVAGEWIND_SAVE_DIR", "SAVAGEWIND_SETTINGS",
+                "SAVAGEWIND_GAME_LIB"):
         env.pop(key, None)
     return env
 
@@ -435,6 +436,23 @@ def stop_process(proc):
         pass
 
 
+def compiled_code(root):
+    # An upstream build is usable only when it produced both pieces of its library.
+    # The id file is part of upstream's own compatibility check, not just a marker.
+    lib = Path(root) / "extracted/swgame.so"
+    identity = Path(root) / "extracted/swgame.so.id"
+    if lib.is_symlink() or identity.is_symlink():
+        return False
+    try:
+        if not lib.is_file() or lib.stat().st_size == 0:
+            return False
+        with identity.open("rb") as stream:
+            value = stream.read(128).strip()
+        return bool(value) and len(value) < 128 and all(32 <= b <= 126 for b in value)
+    except OSError:
+        return False
+
+
 def build_game(root, binary, emit, cancel):
     emit("stage", "Preparando o código nativo do jogo...", None)
     emit("log", "O compilador oficial será executado. Esta etapa pode consumir CPU e RAM.", None)
@@ -442,7 +460,9 @@ def build_game(root, binary, emit, cancel):
     env["SAVAGEWIND_LAUNCHER_EXTRACT"] = ""
     env["SAVAGEWIND_HIDDEN"] = "1"
     log_path = root / ".sw-wrapper/build.log"
-    # The upstream's test setup entry returns 0 even when setup failed; check its READY line.
+    # The upstream's test setup entry returns zero even on a failed setup.
+    # A completed compile and a valid library can recover from a missing READY
+    # message or a failure after linking, but never override explicit NOT READY.
     with open(log_path, "w", encoding="utf-8") as logfile:
         proc = subprocess.Popen([str(binary), str(root / "extracted")],
                                 cwd=root, env=env, stdout=subprocess.PIPE,
@@ -452,7 +472,7 @@ def build_game(root, binary, emit, cancel):
             os.setpriority(os.PRIO_PROCESS, proc.pid, 8)
         except (AttributeError, PermissionError, ProcessLookupError, OSError):
             pass
-        output, ready = bytearray(), False
+        output, ready, not_ready, compiled, entered_game = bytearray(), False, False, False, False
         started = time.monotonic()
         monitor = BuildMonitor(root, started=started)
         last_heartbeat, last_log, build_active = started, started, False
@@ -490,14 +510,35 @@ def build_game(root, binary, emit, cancel):
                             output = bytearray(remain)
                             line = line.decode("utf-8", errors="replace").strip()
                             logfile.write(line + "\n")
-                            if "-> READY" in line:
-                                ready = True
+                            if "[launcher] setup:" in line:
+                                if "-> READY" in line:
+                                    ready = True
+                                elif "-> NOT READY" in line:
+                                    not_ready = True
+                            if line.startswith("[gamebuild] done in "):
+                                compiled = True
+                            if "nn::init::Start at" in line:
+                                entered_game = True
                             if "[gamebuild] generator " in line:
                                 build_active = True
                             if line:
                                 emit("log", line, None)
                                 if not build_active and "[gamebuild]" in line:
                                     emit("stage", line[:160], None)
+                    # Some upstream execution paths enter gameplay instead of
+                    # exiting the test hook. Detect this and relaunch through
+                    # the portable path rather than waiting until the 1h timeout.
+                    if entered_game:
+                        if compiled_code(root):
+                            logfile.write("[wrapper] O executável oficial iniciou o jogo durante a preparação. "
+                                          "Reiniciando pelo fluxo portátil.\n")
+                            emit("log", "O executável oficial entrou no jogo. Reiniciando pelo portable...", None)
+                            stop_process(proc)
+                            break
+                        stop_process(proc)
+                        raise InstallError(
+                            "O upstream entrou no jogo, mas não há código nativo válido "
+                            "na pasta portátil. Consulte o log e confira o caminho [paths] data.")
                     if proc.poll() is not None and not sel.get_map():
                         break
             except (Cancelled, InstallError):
@@ -506,12 +547,33 @@ def build_game(root, binary, emit, cancel):
         proc.wait()
         if output:
             logfile.write(output.decode("utf-8", errors="replace"))
-        logfile.write(f"[progresso] Processo finalizado em {time.monotonic() - started:.1f}s. "
-                      f"Exit code: {proc.returncode}; READY={ready}.\n")
-    if (proc.returncode or not ready or not (root / "extracted/swgame.so").is_file()
-            or not (root / "extracted/swgame.so.id").is_file()):
-        raise InstallError(f"A recompilação falhou. Consulte {log_path}.")
-    emit("progress", "Código do jogo preparado.", 100)
+        artifact_ok = compiled_code(root)
+        accepted = artifact_ok and not not_ready and (
+            ready and proc.returncode == 0 or compiled or entered_game)
+        logfile.write(f"[wrapper] Finalizado em {time.monotonic() - started:.1f}s; "
+                      f"exit={proc.returncode}; ready={ready}; not_ready={not_ready}; "
+                      f"build_done={compiled}; game_started={entered_game}; "
+                      f"artifacts={artifact_ok}; accepted={accepted}.\n")
+        logfile.flush()
+    if not accepted:
+        reasons = []
+        if not artifact_ok:
+            reasons.append("swgame.so ou swgame.so.id ausente/inválido na pasta portátil")
+        if not_ready:
+            reasons.append("o upstream informou explicitamente NOT READY")
+        if not (ready or compiled or entered_game):
+            reasons.append("não foi encontrada confirmação de compilação ou execução")
+        if proc.returncode and not (compiled or entered_game):
+            reasons.append(f"o processo terminou com código {proc.returncode}")
+        detail = "; ".join(reasons) or f"estado inesperado, código de saída {proc.returncode}"
+        emit("log", f"[wrapper] Falha ao validar o código nativo: {detail}", None)
+        raise InstallError(
+            f"O código nativo não foi validado: {detail}. "
+            f"Consulte o log completo em {log_path}.")
+    if not ready:
+        emit("log", "Compilação recuperada: o código nativo foi concluído, "
+                    "embora o upstream não tenha retornado a confirmação READY.", None)
+    emit("progress", "Código nativo validado. Iniciando o jogo...", 100)
 
 
 

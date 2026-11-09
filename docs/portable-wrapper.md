@@ -91,5 +91,14 @@ mas ainda não é uma API estável garantida por seus mantenedores. Testes unit�
 não substituem validação com um dump próprio do jogo nem comprovam desempenho em
 todos os desktops.
 
+O wrapper diferencia a confirmação da compilação da confirmação de preparação do launcher.
+Quando a biblioteca e seu identificador foram produzidos pelo compilador oficial e o log
+confirma o término, ele não descarta o resultado apenas porque falta a mensagem READY.
+Uma rejeição explícita NOT READY continua sendo um erro. Se o executável iniciar o jogo
+durante a preparação, o wrapper identifica a entrada no código do jogo, encerra aquela
+instância e inicia novamente com o caminho portátil. Os motivos e verificações são
+registrados no build.log. Essa recuperação não pode comprovar compatibilidade em versões
+futuras do upstream sem uma execução real do jogo.
+
 Os testes sintéticos estão em wrapper/tests/ e tools/linux/test_import_game.py.
 O workflow .github/workflows/wrapper.yml também gera e verifica o AppImage Linux.
