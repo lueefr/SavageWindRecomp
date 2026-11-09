@@ -595,7 +595,7 @@ def build_game(root, binary, emit, cancel):
                                 entered_game = True
                             if line:
                                 emit("log", line, None)
-                                if not build_active and "[gamebuild]" in line:
+                                if "[gamebuild]" in line:
                                     emit("stage", line[:160], None)
                     # Some upstream execution paths enter gameplay instead of
                     # exiting the test hook. Detect this and relaunch through
