@@ -118,7 +118,7 @@ class Window(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.pump)
         self.timer.start(75)
-        if valid_game(self.root / "extracted"):
+        if autoplay and (valid_game(self.root / "extracted") or legacy_folder(self.root)):
             QTimer.singleShot(0, lambda: self.start(None))
 
     def mark_step(self, stage):
@@ -149,6 +149,22 @@ class Window(QWidget):
         if picked:
             self.source.setText(picked)
 
+    def pick_file(self, field, title, pattern):
+        picked, _ = QFileDialog.getOpenFileName(self, title, "", pattern)
+        if picked:
+            field.setText(picked)
+
+    def install_files(self):
+        if self.tabs.currentIndex() == 0:
+            self.start(self.source.text().strip())
+            return
+        paths = {key: field.text().strip() for key, field in self.packages.items()}
+        if any(not value or not Path(value).is_file() for value in paths.values()):
+            QMessageBox.warning(self, "Arquivos inválidos",
+                                "Selecione o NSP/XCI base, a atualização NSP e o arquivo prod.keys.")
+            return
+        self.start(paths)
+
     def toggle_log(self):
         hidden = self.log.isHidden()
         self.log.setVisible(hidden)
@@ -169,7 +185,7 @@ class Window(QWidget):
     def start(self, source):
         if self.running:
             return
-        if source and not valid_game(source):
+        if source and not isinstance(source, dict) and not valid_game(source):
             QMessageBox.warning(self, "Arquivos inválidos", "A pasta selecionada precisa conter exefs/main, exefs/main.npdm e romfs/.")
             return
         self.cancel_event = threading.Event()
@@ -249,10 +265,10 @@ class Window(QWidget):
                 QMessageBox.critical(self, "Savage Wind", event[1])
 
 
-def run(root, selftest=False):
+def run(root, selftest=False, autoplay=True):
     app = QApplication.instance() or QApplication([])
     app.setApplicationName("Savage Wind")
-    window = Window(root)
+    window = Window(root, autoplay=autoplay and not selftest)
     window.show()
     if selftest:
         app.processEvents()
