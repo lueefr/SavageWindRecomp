@@ -742,6 +742,9 @@ def import_packages(root, paths, emit, cancel):
                                                 f"{count} de {total} arquivos\n"
                                                 f"ETA: {eta}")
                                     emit("live", snapshot, round(100 * count / total, 1))
+                                elif re.match(r"Extracted \\d+ RomFS files", line):
+                                    # The live file counter already displays this milestone.
+                                    continue
                                 elif line.startswith(("Checking ", "Inspect", "Merging ",
                                                       "Copying ", "Extracting ", "Expanding ",
                                                       "Verified ", "Game files ready")):
