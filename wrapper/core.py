@@ -670,18 +670,13 @@ def import_packages(root, paths, emit, cancel):
             proc = subprocess.Popen(command, cwd=root, env=portable_env(root),
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     start_new_session=True, bufsize=0)
-            lines, last_notice = bytearray(), time.monotonic()
+            lines = bytearray()
             with selectors.DefaultSelector() as selection:
                 selection.register(proc.stdout, selectors.EVENT_READ)
                 try:
                     while True:
                         check_cancel(cancel)
                         events = selection.select(timeout=0.4)
-                        now = time.monotonic()
-                        if now - last_notice > 3:
-                            emit("stage", "Importando os arquivos do jogo... "
-                                          "Consulte o log para detalhes.", None)
-                            last_notice = now
                         for key, _ in events:
                             chunk = os.read(key.fd, 16384)
                             if not chunk:
@@ -695,17 +690,29 @@ def import_packages(root, paths, emit, cancel):
                                 if not line:
                                     continue
                                 logfile.write(line + "\n")
-                                emit("log", line, None)
                                 if line.startswith("RomFS file "):
                                     import re
                                     match = re.match(r"RomFS file (\d+)/(\d+):", line)
                                     if match and int(match.group(2)):
                                         emit("progress", "Expandindo os arquivos do jogo...",
                                              round(100 * int(match.group(1)) / int(match.group(2)), 1))
+                                    else:
+                                        emit("log", line, None)
+                                elif line.startswith("NCA progress "):
+                                    import re
+                                    match = re.match(r"NCA progress (base|update) (\\d+)/(\\d+)", line)
+                                    if match and int(match.group(3)):
+                                        label = "base" if match.group(1) == "base" else "atualização"
+                                        percent = round(100 * int(match.group(2)) / int(match.group(3)), 1)
+                                        emit("progress", f"Copiando NCA {label}: {percent:.1f}%", percent)
+                                    else:
+                                        emit("log", line, None)
                                 elif line.startswith(("Checking ", "Inspect", "Merging ",
                                                       "Copying ", "Extracting ", "Expanding ",
                                                       "Verified ", "Game files ready")):
                                     emit("stage", line[:180], None)
+                                else:
+                                    emit("log", line, None)
                         if proc.poll() is not None and not selection.get_map():
                             break
                 except BaseException:
