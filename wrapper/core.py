@@ -328,19 +328,59 @@ def adopt_release(info, root, emit, cancel):
     return None
 
 
+def process_groups(root):
+    # On Linux, official Savage Wind spawns compilers into separate process groups.
+    # Collect their groups before terminating the parent so orphan compilers do not survive.
+    groups, seen, pending = set(), set(), [root]
+    own = os.getpgrp()
+    while pending:
+        pid = pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            children = Path(f"/proc/{pid}/task/{pid}/children").read_text().split()
+            pending.extend(int(value) for value in children)
+            group = os.getpgid(pid)
+            if group > 0 and group != own:
+                groups.add(group)
+        except (OSError, ValueError):
+            continue
+    return groups
+
+
 def stop_process(proc):
+    # Freeze just the parent while taking a snapshot so it cannot spawn more jobs.
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
-        proc.wait(timeout=5)
-    except (ProcessLookupError, OSError, subprocess.TimeoutExpired):
+        os.kill(proc.pid, signal.SIGSTOP)
+    except (ProcessLookupError, OSError):
+        pass
+    groups = process_groups(proc.pid)
+    groups.add(proc.pid)  # Popen(..., start_new_session=True).
+    groups.discard(os.getpgrp())
+    for group in groups:
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, OSError):
+            os.killpg(group, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
             pass
+    try:
+        os.kill(proc.pid, signal.SIGCONT)
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        proc.wait(timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    # Terminate surviving detached compiler groups, not just the upstream session.
+    for group in groups:
         try:
-            proc.wait(timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
+            os.killpg(group, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
             pass
+    try:
+        proc.wait(timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def build_game(root, binary, emit, cancel):
