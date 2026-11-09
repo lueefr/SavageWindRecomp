@@ -655,7 +655,7 @@ def import_detail(title, done, total, count, total_count, unit, started):
     else:
         eta = "calculando..."
     return (f"{title}: {ratio:.1f}%\n"
-            f"{title.split(':')[0]}: {ratio:.1f}% "
+            f"{title.removeprefix('Copiando ')}: {ratio:.1f}% "
             f"({done // CHUNK} / {total // CHUNK} MiB)\n"
             f"{count} de {total_count} {unit}\n"
             f"ETA: {eta}")
