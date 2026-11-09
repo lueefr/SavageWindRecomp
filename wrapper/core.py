@@ -44,8 +44,15 @@ def portable_root(env=None, explicit=None):
 def portable_env(root, base=None):
     root = Path(root).resolve()
     env = dict(os.environ if base is None else base)
+    # Do not silently follow links that could redirect saves or caches outside the AppImage folder.
+    for name in ("save", "cache", "fonts", "extracted", ".sw-wrapper", ".xdg"):
+        if (root / name).is_symlink():
+            raise InstallError(f"O armazenamento portátil contém um link externo: {name}")
     for sub in ("cache/mesa", ".xdg/config", ".xdg/data", ".xdg/state", ".sw-wrapper/tmp"):
-        (root / sub).mkdir(parents=True, exist_ok=True)
+        path = root / sub
+        if path.is_symlink():
+            raise InstallError(f"O armazenamento portátil contém um link externo: {sub}")
+        path.mkdir(parents=True, exist_ok=True)
     env.update({
         # HOME is redirected only for the official game and its helpers, not the desktop UI.
         # This also catches libraries which ignore XDG_* and write directly to ~/.
@@ -62,14 +69,20 @@ def portable_env(root, base=None):
     for key in ("APPIMAGE", "APPDIR", "OWD", "LD_LIBRARY_PATH", "LD_PRELOAD",
                 "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH", "GTK_PATH",
                 "PYTHONPATH", "PYTHONHOME", "SAVAGEWIND_LAUNCHER_EXTRACT",
-                "SAVAGEWIND_SETUP_FROM", "SAVAGEWIND_NO_LAUNCHER"):
+                "SAVAGEWIND_SETUP_FROM", "SAVAGEWIND_NO_LAUNCHER",
+                "SAVAGEWIND_SAVE_DIR", "SAVAGEWIND_SETTINGS"):
         env.pop(key, None)
     return env
 
 
 def valid_game(folder):
     folder = Path(folder)
-    return ((folder / "exefs/main").is_file()
+    return (not folder.is_symlink()
+            and not (folder / "exefs").is_symlink()
+            and not (folder / "romfs").is_symlink()
+            and not (folder / "exefs/main").is_symlink()
+            and not (folder / "exefs/main.npdm").is_symlink()
+            and (folder / "exefs/main").is_file()
             and (folder / "exefs/main.npdm").is_file()
             and (folder / "romfs").is_dir())
 
@@ -389,7 +402,8 @@ def build_game(root, binary, emit, cancel):
         proc.wait()
         if output:
             logfile.write(output.decode("utf-8", errors="replace"))
-    if proc.returncode or not ready or not (root / "extracted/swgame.so").is_file():
+    if (proc.returncode or not ready or not (root / "extracted/swgame.so").is_file()
+            or not (root / "extracted/swgame.so.id").is_file()):
         raise InstallError(f"A recompilação falhou. Consulte {log_path}.")
     emit("progress", "Código do jogo preparado.", 100)
 
@@ -535,6 +549,8 @@ class Pipeline:
             move_data(legacy, root, self.status, self.cancel)
         portable_env(root)
         state = read_state(root)
+        if source and valid_game(root / "extracted"):
+            raise InstallError("O jogo já está instalado nesta pasta. Seus arquivos não serão substituídos.")
         if not valid_game(root / "extracted") and not source:
             return "setup"
         # Check availability before copying many GiB of game files.
