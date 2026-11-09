@@ -6,7 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton,
     QVBoxLayout, QHBoxLayout, QGroupBox, QFileDialog, QProgressBar, QPlainTextEdit,
-    QMessageBox)
+    QMessageBox, QListWidget)
 
 from .core import Pipeline, Cancelled, InstallError, valid_game
 
@@ -59,6 +59,11 @@ class Window(QWidget):
         self.stage = QLabel("Preparando...")
         self.stage.setWordWrap(True)
         tasks.addWidget(self.stage)
+        self.step_names = ["Armazenamento", "Arquivos do jogo", "Atualizações", "Recompilação", "Iniciar jogo"]
+        self.step_view = QListWidget()
+        self.step_view.setFixedHeight(128)
+        tasks.addWidget(self.step_view)
+        self.mark_step(-1)
         self.bar = QProgressBar()
         self.bar.setRange(0, 0)
         tasks.addWidget(self.bar)
@@ -84,6 +89,29 @@ class Window(QWidget):
         self.timer.start(75)
         if valid_game(self.root / "extracted"):
             QTimer.singleShot(0, lambda: self.start(None))
+
+    def mark_step(self, stage):
+        for i, name in enumerate(self.step_names):
+            mark = "✓" if i < stage else "▶" if i == stage else "○"
+            label = f"{mark}  {name}"
+            if i >= self.step_view.count():
+                self.step_view.addItem(label)
+            else:
+                self.step_view.item(i).setText(label)
+
+    def phase(self, message):
+        title = message.lower()
+        if any(x in title for x in ("recompil", "código nativo", "[gamebuild]", "linking")):
+            return 3
+        if any(x in title for x in ("atualiza", "baixando", "versão", "oficial")):
+            return 2
+        if any(x in title for x in ("copiando", "arquivo", "analisando", "preparando exefs")):
+            return 1
+        if "iniciando o savage wind" in title:
+            return 4
+        if any(x in title for x in ("armazenamento", "migrando", "migração")):
+            return 0
+        return None
 
     def pick(self):
         picked = QFileDialog.getExistingDirectory(self, "Pasta com os arquivos do jogo")
@@ -120,6 +148,7 @@ class Window(QWidget):
         self.cancel_button.setEnabled(True)
         self.bar.setRange(0, 0)
         self.log.clear()
+        self.mark_step(-1)
         self.stage.setText("Iniciando...")
         def emit(kind, message, fraction):
             self.events.put(("event", kind, message, fraction))
@@ -153,6 +182,11 @@ class Window(QWidget):
                     self.log.appendPlainText(message)
                     continue
                 self.stage.setText(message)
+                if kind == "stage":
+                    step = self.phase(message)
+                    if step is not None:
+                        self.mark_step(step)
+                    self.log.appendPlainText(message)
                 if fraction is None:
                     self.bar.setRange(0, 0)
                 else:
@@ -187,8 +221,10 @@ class Window(QWidget):
 def run(root, selftest=False):
     app = QApplication.instance() or QApplication([])
     app.setApplicationName("Savage Wind")
-    if selftest:
-        return 0
     window = Window(root)
     window.show()
+    if selftest:
+        app.processEvents()
+        window.close()
+        return 0
     return app.exec()

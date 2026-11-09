@@ -17,6 +17,7 @@ class Window(Gtk.Window):
         self.events = queue.Queue()
         self.cancel_event = threading.Event()
         self.running = False
+        self.progress_busy = True
         self.set_default_size(680, 510)
         self.set_border_width(18)
         self.connect("delete-event", self.close_window)
@@ -63,6 +64,13 @@ class Window(Gtk.Window):
         self.stage.set_halign(Gtk.Align.START)
         self.stage.set_line_wrap(True)
         self.progress_box.pack_start(self.stage, False, False, 0)
+        self.step_names = ["Armazenamento", "Arquivos do jogo", "Atualizações", "Recompilação", "Iniciar jogo"]
+        self.step_labels = []
+        for name in self.step_names:
+            label = Gtk.Label(label="○  " + name)
+            label.set_halign(Gtk.Align.START)
+            self.step_labels.append(label)
+            self.progress_box.pack_start(label, False, False, 0)
         self.bar = Gtk.ProgressBar()
         self.progress_box.pack_start(self.bar, False, False, 0)
         buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -83,6 +91,25 @@ class Window(Gtk.Window):
         page.pack_start(self.progress_box, True, True, 0)
         self.progress_box.hide()
         GLib.timeout_add(90, self.pump)
+
+    def mark_step(self, step):
+        for i, name in enumerate(self.step_names):
+            mark = "✓" if i < step else "▶" if i == step else "○"
+            self.step_labels[i].set_text(mark + "  " + name)
+
+    def phase(self, message):
+        lower = message.lower()
+        if any(x in lower for x in ("recompil", "código nativo", "[gamebuild]", "linking")):
+            return 3
+        if any(x in lower for x in ("atualiza", "baixando", "versão", "oficial")):
+            return 2
+        if any(x in lower for x in ("copiando", "arquivo", "analisando")):
+            return 1
+        if "iniciando o savage wind" in lower:
+            return 4
+        if any(x in lower for x in ("armazenamento", "migrando", "migração")):
+            return 0
+        return None
 
     def pick(self, *_):
         dialog = Gtk.FileChooserDialog(title="Pasta com os arquivos do jogo", parent=self,
@@ -131,6 +158,8 @@ class Window(Gtk.Window):
         self.cancel_button.set_sensitive(True)
         self.stage.set_text("Preparando...")
         self.log.get_buffer().set_text("")
+        self.mark_step(-1)
+        self.progress_busy = True
         def emit(kind, message, fraction):
             self.events.put(("event", kind, message, fraction))
         def ask(message):
@@ -163,6 +192,13 @@ class Window(Gtk.Window):
                     buf.insert(buf.get_end_iter(), message + "\n")
                     continue
                 self.stage.set_text(message)
+                if kind == "stage":
+                    step = self.phase(message)
+                    if step is not None:
+                        self.mark_step(step)
+                    buf = self.log.get_buffer()
+                    buf.insert(buf.get_end_iter(), message + "\n")
+                self.progress_busy = fraction is None
                 if fraction is None:
                     self.bar.pulse()
                 else:
@@ -188,7 +224,7 @@ class Window(Gtk.Window):
                 buf = self.log.get_buffer()
                 buf.insert(buf.get_end_iter(), "ERRO: " + event[1] + "\n")
                 self.alert(event[1])
-        if self.running:
+        if self.running and self.progress_busy:
             self.bar.pulse()
         return True
 
