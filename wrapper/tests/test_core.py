@@ -97,6 +97,54 @@ class PortableTests(unittest.TestCase):
                 core.copy_game(root, original, lambda *_: None, cancel)
             self.assertFalse((root / "extracted").exists())
 
+    def test_migration_moves_game_and_saves_without_creating_home_data(self):
+        from wrapper.migration import move_data
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            old = base / "old"
+            old.mkdir()
+            (old / "save").mkdir()
+            (old / "save/test.sav").write_bytes(b"player save")
+            (old / "extracted").mkdir()
+            (old / "extracted/marker").write_bytes(b"game")
+            dest = base / "portable"
+            (dest / ".sw-wrapper").mkdir(parents=True)
+            move_data(old, dest, lambda *_: None, threading.Event())
+            self.assertFalse(old.exists())
+            self.assertEqual((dest / "save/test.sav").read_bytes(), b"player save")
+            self.assertEqual((dest / "extracted/marker").read_bytes(), b"game")
+
+    def test_migration_refuses_existing_destination_before_moving_anything(self):
+        from wrapper.migration import move_data
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            old, dest = base / "old", base / "portable"
+            old.mkdir()
+            (dest / ".sw-wrapper").mkdir(parents=True)
+            (old / "save").mkdir()
+            (old / "save/data").write_bytes(b"save")
+            (old / "cache").mkdir()
+            (dest / "cache").mkdir()
+            with self.assertRaises(core.InstallError):
+                move_data(old, dest, lambda *_: None, threading.Event())
+            self.assertTrue((old / "save/data").exists())
+            self.assertFalse((dest / "save").exists())
+
+    def test_cancelled_migration_leaves_old_files(self):
+        from wrapper.migration import move_data
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            old, dest = base / "old", base / "portable"
+            old.mkdir()
+            (dest / ".sw-wrapper").mkdir(parents=True)
+            (old / "save").mkdir()
+            (old / "save/data").write_bytes(b"save")
+            stopped = threading.Event()
+            stopped.set()
+            with self.assertRaises(core.Cancelled):
+                move_data(old, dest, lambda *_: None, stopped)
+            self.assertTrue((old / "save/data").exists())
+
     def test_no_game_shows_installer_without_network(self):
         with tempfile.TemporaryDirectory() as folder:
             with mock.patch.object(core, "fetch_latest", side_effect=AssertionError("network called")):
