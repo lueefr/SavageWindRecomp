@@ -196,22 +196,23 @@ def copy_game(root, source, emit, cancel):
             # Btrfs and other reflink-capable filesystems copy large game files CoW in O(1).
             try:
                 with open(original, "rb") as src, open(dest, "wb") as dst:
+                    cloned = False
                     try:
                         fcntl.ioctl(dst.fileno(), FICLONE, src.fileno())
+                        cloned = True
                     except OSError:
-                        src.seek(0)
                         while block := src.read(CHUNK):
                             check_cancel(cancel)
                             dst.write(block)
                             finished += len(block)
                             emit("progress", "Copiando arquivos do jogo...",
                                  round(100 * finished / total, 1) if total else 100)
+                    if cloned:
+                        finished += size
             except OSError as error:
                 raise InstallError(f"Erro ao copiar {rel}: {error}") from error
-            finished += max(0, size - max(0, dest.stat().st_size if False else size))
-            # Account for reflink/copy without reading the file back.
             if total:
-                emit("progress", f"Preparando {rel}", round(100 * sum_done(files, original) / total, 1))
+                emit("progress", f"Preparando {rel}", round(100 * finished / total, 1))
             emit("log", f"Preparado: {rel} ({size} bytes)", None)
         check_cancel(cancel)
         os.replace(stage, target)
@@ -219,15 +220,6 @@ def copy_game(root, source, emit, cancel):
     finally:
         if stage.exists():
             shutil.rmtree(stage)
-
-
-def sum_done(files, last):
-    total = 0
-    for source, _, size in files:
-        total += size
-        if source == last:
-            break
-    return total
 
 
 def download_release(info, root, emit, cancel):
