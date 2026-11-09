@@ -3,16 +3,10 @@ import queue
 import threading
 from pathlib import Path
 
-try:
-    from PySide6.QtCore import QTimer
-    from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton,
-        QVBoxLayout, QHBoxLayout, QGroupBox, QFileDialog, QProgressBar, QPlainTextEdit,
-        QMessageBox)
-except ImportError:
-    from PyQt6.QtCore import QTimer
-    from PyQt6.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton,
-        QVBoxLayout, QHBoxLayout, QGroupBox, QFileDialog, QProgressBar, QPlainTextEdit,
-        QMessageBox)
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton,
+    QVBoxLayout, QHBoxLayout, QGroupBox, QFileDialog, QProgressBar, QPlainTextEdit,
+    QMessageBox)
 
 from .core import Pipeline, Cancelled, InstallError, valid_game
 
