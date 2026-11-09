@@ -6,13 +6,14 @@ from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton,
     QVBoxLayout, QHBoxLayout, QGroupBox, QFileDialog, QProgressBar, QPlainTextEdit,
-    QMessageBox, QListWidget)
+    QMessageBox, QListWidget, QTabWidget)
 
 from .core import Pipeline, Cancelled, InstallError, valid_game
+from .migration import legacy_folder
 
 
 class Window(QWidget):
-    def __init__(self, root):
+    def __init__(self, root, autoplay=True):
         super().__init__()
         self.root = Path(root)
         self.events = queue.Queue()
@@ -30,27 +31,57 @@ class Window(QWidget):
         subtitle = QLabel("Instalação portátil · Savage Wind oficial")
         layout.addWidget(subtitle)
 
-        self.form = QGroupBox("Instalar os arquivos do jogo")
+
+        self.form = QGroupBox("Arquivos para instalação")
         fields = QVBoxLayout(self.form)
-        intro = QLabel("Selecione a pasta dos seus arquivos extraídos, contendo exefs/ e romfs/.")
+        intro = QLabel("Escolha os arquivos extraídos ou importe pacotes NSP/XCI do seu jogo.")
         intro.setWordWrap(True)
         fields.addWidget(intro)
+        self.tabs = QTabWidget()
+        extracted_page = QWidget()
+        extracted_fields = QVBoxLayout(extracted_page)
+        extracted_fields.addWidget(QLabel("Pasta contendo exefs/ e romfs/ já extraídos:"))
         choose_row = QHBoxLayout()
         self.source = QLineEdit()
-        self.source.setPlaceholderText("Pasta com exefs/ e romfs/")
+        self.source.setPlaceholderText("Selecione a pasta com exefs/ e romfs/")
         choose_row.addWidget(self.source, 1)
-        choose = QPushButton("Procurar...")
+        choose = QPushButton("Procurar pasta...")
         choose.clicked.connect(self.pick)
         choose_row.addWidget(choose)
-        fields.addLayout(choose_row)
+        extracted_fields.addLayout(choose_row)
+        self.tabs.addTab(extracted_page, "Pasta extraída")
+
+        packages_page = QWidget()
+        packages_fields = QVBoxLayout(packages_page)
+        label = QLabel("Selecione seu jogo base NSP/XCI, atualização NSP e prod.keys.")
+        label.setWordWrap(True)
+        packages_fields.addWidget(label)
+        self.packages = {}
+        for name, title, pattern in (
+                ("base", "Jogo base", "Pacotes Switch (*.nsp *.xci);;Todos (*)"),
+                ("update", "Atualização", "Pacotes NSP (*.nsp);;Todos (*)"),
+                ("keys", "Chaves", "prod.keys (*.keys);;Todos (*)")):
+            packages_fields.addWidget(QLabel(title))
+            row = QHBoxLayout()
+            field = QLineEdit()
+            row.addWidget(field, 1)
+            browse = QPushButton("Procurar...")
+            browse.clicked.connect(lambda checked=False, f=field, t=title, p=pattern:
+                                   self.pick_file(f, t, p))
+            row.addWidget(browse)
+            packages_fields.addLayout(row)
+            self.packages[name] = field
+        self.tabs.addTab(packages_page, "NSP / XCI")
+        fields.addWidget(self.tabs)
         destination = QLabel(f"Destino: {self.root / 'extracted'}")
         destination.setWordWrap(True)
         fields.addWidget(destination)
-        note = QLabel("Os saves, configurações e caches permanecem nesta mesma pasta, ao lado do AppImage.")
+        note = QLabel("Saves, configurações, caches e downloads permanecem junto ao AppImage. "
+                      "A importação pode exigir bastante espaço temporário.")
         note.setWordWrap(True)
         fields.addWidget(note)
         self.install = QPushButton("Instalar e jogar")
-        self.install.clicked.connect(lambda: self.start(self.source.text().strip()))
+        self.install.clicked.connect(self.install_files)
         fields.addWidget(self.install)
         layout.addWidget(self.form)
 
