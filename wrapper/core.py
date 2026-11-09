@@ -345,13 +345,13 @@ class Pipeline:
 
     def run(self, source=None):
         root = self.root
-        self.status("stage", "Preparando o armazenamento portátil...")
         fd, temp = tempfile.mkstemp(prefix=".write-", dir=root)
         os.close(fd)
         os.unlink(temp)
         if (root / ".sw-wrapper").is_symlink():
             raise InstallError("A pasta .sw-wrapper não pode ser um link simbólico.")
         (root / ".sw-wrapper").mkdir(exist_ok=True)
+        self.status("stage", "Preparando o armazenamento portátil...")
         from .migration import legacy_folder, move_data
         legacy = legacy_folder(root)
         if legacy is not None and self.ask(f"Instalação anterior encontrada em {legacy}.\nDeseja mover os arquivos, saves e configurações para a pasta deste AppImage?"):
