@@ -10,8 +10,8 @@ if [ "$ARCH" != x86_64 ]; then
 fi
 PYTHON=python3
 if [ -n "$PYTHON_WRAPPER" ]; then PYTHON=$PYTHON_WRAPPER; fi
-"$PYTHON" -c 'import PySide6, PyInstaller' >/dev/null || {
-    echo "The builder needs PySide6 and PyInstaller" >&2
+"$PYTHON" -c 'import PySide6, PyInstaller, cryptography' >/dev/null || {
+    echo "The builder needs PySide6, PyInstaller and cryptography" >&2
     exit 2
 }
 ROOT=build/wrapper
@@ -20,9 +20,22 @@ mkdir -p "$ROOT" build/dist
 rm -rf "$APPDIR"
 "$PYTHON" -m PyInstaller --noconfirm --clean --onedir --name swqt --distpath "$ROOT/dist" \
     --workpath "$ROOT/work" --specpath "$ROOT" wrapper/qt_entry.py
-mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/wrapper"
+# Ship one isolated import helper; the installation never depends on system Python modules.
+"$PYTHON" -m PyInstaller --noconfirm --clean --onefile --name swextract \
+    --paths tools/linux/nsp_vendor --distpath "$ROOT/dist" \
+    --workpath "$ROOT/extract-work" --specpath "$ROOT" tools/linux/import_game.py
+"$PYTHON" tools/build_hactool.py --src "$PWD/$ROOT/hactool-src" --out "$PWD/$ROOT/hactool"
+mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/wrapper"
 cp -R "$ROOT/dist/swqt" "$APPDIR/usr/bin/"
-cp wrapper/__init__.py wrapper/core.py wrapper/launch.py wrapper/gtk_ui.py "$APPDIR/usr/share/wrapper/"
+cp "$ROOT/dist/swextract" "$ROOT/hactool/hactool" "$APPDIR/usr/bin/"
+cp "$ROOT/hactool/LICENSE" "$APPDIR/usr/bin/hactool-LICENSE.txt"
+cp tools/linux/nsp_vendor/LICENSE "$APPDIR/usr/bin/nsp-extractor-LICENSE.txt"
+# hactool can link dynamically to mbedTLS; bundle only those runtime libraries.
+ldd "$APPDIR/usr/bin/hactool" | awk '/=> \\/\\// { print $3 }' | while read -r lib; do
+    case "$(basename "$lib")" in libmbed*.so*) cp -L "$lib" "$APPDIR/usr/lib/" ;; esac
+done
+patchelf --set-rpath '\$ORIGIN/../lib' "$APPDIR/usr/bin/hactool"
+cp wrapper/__init__.py wrapper/core.py wrapper/launch.py wrapper/gtk_ui.py wrapper/migration.py wrapper/rollback.py "$APPDIR/usr/share/wrapper/"
 cp tools/linux/wrapper_AppRun "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
 cp tools/linux/wrapper.desktop "$APPDIR/savagewind-portable.desktop"

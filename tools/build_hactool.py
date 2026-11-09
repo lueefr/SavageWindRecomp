@@ -66,7 +66,7 @@ def main():
     config = CONFIG_MK.replace('CC = cc\n', f'CC = {args.cc}\n') if args.cc else CONFIG_MK
     (src / 'config.mk').write_text(config, encoding='utf-8', newline='\n')
 
-    jobs = f'-j{os.cpu_count() or 4}'
+    jobs = f'-j{min(4, os.cpu_count() or 4)}'
     if WIN:
         env = dict(os.environ, MSYSTEM='UCRT64', CHERE_INVOKING='1')
         r = subprocess.run([str(MSYS_BASH), '-lc', f'make {jobs}'], cwd=src, env=env, capture_output=True, text=True)
