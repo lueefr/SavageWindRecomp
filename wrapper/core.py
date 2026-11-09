@@ -8,6 +8,7 @@ from pathlib import Path
 import platform
 import selectors
 import shutil
+import ssl
 import signal
 import subprocess
 import tempfile
@@ -138,12 +139,35 @@ def latest(releases, arch=None):
     return max(found, key=lambda item: item[0])[1]
 
 
+def tls_context():
+    # Frozen Python's OpenSSL may not find the host distribution's CA files.
+    # Extend (never disable) its default trust store with the packaged Mozilla roots.
+    context = ssl.create_default_context()
+    bundle = os.environ.get("SAVAGEWIND_CA_BUNDLE")
+    if not bundle:
+        try:
+            import certifi
+        except ImportError:
+            pass
+        else:
+            bundle = certifi.where()
+    if bundle:
+        path = Path(bundle)
+        if not path.is_file():
+            raise InstallError(f"O pacote de certificados HTTPS não foi encontrado: {path}")
+        try:
+            context.load_verify_locations(cafile=str(path))
+        except ssl.SSLError as error:
+            raise InstallError(f"Os certificados HTTPS incluídos são inválidos: {error}") from error
+    return context
+
+
 def fetch_latest():
     request = urllib.request.Request(RELEASES, headers={
         "Accept": "application/vnd.github+json",
         "User-Agent": "SavageWindPortable/1.0",
     })
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with urllib.request.urlopen(request, timeout=10, context=tls_context()) as response:
         result = json.load(response)
     return latest(result)
 
@@ -270,7 +294,8 @@ def download_release(info, root, emit, cancel):
         hasher, transferred = hashlib.sha256(), 0
         request = urllib.request.Request(info["url"], headers={"User-Agent": "SavageWindPortable/1.0"})
         emit("stage", f"Baixando Savage Wind {info['tag']}...", 0)
-        with os.fdopen(fd, "wb", buffering=CHUNK) as dest, urllib.request.urlopen(request, timeout=20) as src:
+        with os.fdopen(fd, "wb", buffering=CHUNK) as dest, urllib.request.urlopen(
+                request, timeout=20, context=tls_context()) as src:
             while data := src.read(CHUNK):
                 check_cancel(cancel)
                 transferred += len(data)
@@ -636,10 +661,12 @@ class Pipeline:
             raise InstallError("A pasta extracted/ já existe, mas está incompleta. Não será sobrescrita.")
         self.status("stage", "Procurando atualizações oficiais...")
         installed = local_release(root, state)
+        release_error = None
         try:
             remote = fetch_latest()
         except (urllib.error.URLError, TimeoutError, OSError, ValueError, InstallError) as error:
             remote = None
+            release_error = str(error)
             self.status("log", f"Atualização indisponível: {error}")
         rollback = None
         if remote and (not installed or state.get("official_digest") != remote["digest"]):
@@ -662,7 +689,13 @@ class Pipeline:
                     raise
         try:
             if not installed:
-                raise InstallError("Não existe AppImage oficial instalado e não foi possível baixá-lo.")
+                if release_error:
+                    raise InstallError(
+                        "Não foi possível consultar a release oficial por HTTPS. "
+                        "Confira a conexão e o certificado do servidor.\n"
+                        f"Detalhes: {release_error}")
+                raise InstallError(
+                    "Não existe AppImage oficial instalado e nenhuma release compatível pôde ser obtida.")
             check_cancel(self.cancel)
             if not valid_game(root / "extracted"):
                 if isinstance(source, dict):

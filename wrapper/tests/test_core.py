@@ -57,6 +57,33 @@ class PortableTests(unittest.TestCase):
             self.assertNotIn("APPDIR", variables)
             self.assertNotIn("LD_LIBRARY_PATH", variables)
 
+    def test_bundled_ca_extends_default_tls_trust(self):
+        with tempfile.NamedTemporaryFile() as bundle:
+            with mock.patch.dict(os.environ, {"SAVAGEWIND_CA_BUNDLE": bundle.name}):
+                with mock.patch.object(core.ssl, "create_default_context") as create:
+                    context = core.tls_context()
+            self.assertIs(context, create.return_value)
+            context.load_verify_locations.assert_called_once_with(cafile=bundle.name)
+
+    def test_bundled_ca_missing_fails_closed(self):
+        with mock.patch.dict(os.environ, {"SAVAGEWIND_CA_BUNDLE": "/nonexistent/savagewind-ca.pem"}):
+            with self.assertRaisesRegex(core.InstallError, "certificados HTTPS"):
+                core.tls_context()
+
+    def test_release_lookup_passes_verified_tls_context(self):
+        class Reply:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self, *args):
+                return b"[]"
+        with mock.patch.object(core, "tls_context", return_value="trusted-context"):
+            with mock.patch.object(core.urllib.request, "urlopen", return_value=Reply()) as open_url:
+                with self.assertRaises(core.InstallError):
+                    core.fetch_latest()
+        self.assertEqual(open_url.call_args.kwargs["context"], "trusted-context")
+
     def test_newest_release_includes_alpha(self):
         older = release("v0.4", "2026-11-01T00:00:00Z", prerelease=False)
         newer = release("v0.5-alpha", "2026-11-09T00:00:00Z")

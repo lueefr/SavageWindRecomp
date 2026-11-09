@@ -26,6 +26,11 @@ A estrutura é aproximadamente:
       .sw-wrapper/ (estados, registros, temporários, rollback)
       .xdg/ (outros dados XDG usados por bibliotecas)
 
+O wrapper inclui um pacote atualizado de certificados confiáveis (certifi/Mozilla),
+para que consultas e downloads por HTTPS funcionem mesmo quando o Python empacotado
+não consegue descobrir os certificados da distribuição Linux. A validação TLS e
+a conferência de SHA-256 permanecem obrigatórias.
+
 O wrapper define SAVAGEWIND_DATA_ROOT, HOME, XDG_CONFIG_HOME, XDG_DATA_HOME,
 XDG_STATE_HOME, XDG_CACHE_HOME, MESA_SHADER_CACHE_DIR e TMPDIR **antes**
 de executar o upstream e seus auxiliares. O novo fluxo não escreve em

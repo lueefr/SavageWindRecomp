@@ -10,15 +10,15 @@ if [ "$ARCH" != x86_64 ]; then
 fi
 PYTHON=python3
 if [ -n "$PYTHON_WRAPPER" ]; then PYTHON=$PYTHON_WRAPPER; fi
-"$PYTHON" -c 'import PySide6, PyInstaller, cryptography' >/dev/null || {
-    echo "The builder needs PySide6, PyInstaller and cryptography" >&2
+"$PYTHON" -c 'import PySide6, PyInstaller, cryptography, certifi' >/dev/null || {
+    echo "The builder needs PySide6, PyInstaller, cryptography and certifi" >&2
     exit 2
 }
 ROOT=build/wrapper
 APPDIR="$ROOT/AppDir"
 mkdir -p "$ROOT" build/dist
 rm -rf "$APPDIR"
-"$PYTHON" -m PyInstaller --noconfirm --clean --onedir --name swqt --distpath "$ROOT/dist" \
+"$PYTHON" -m PyInstaller --noconfirm --clean --onedir --name swqt --collect-data certifi --distpath "$ROOT/dist" \
     --workpath "$ROOT/work" --specpath "$ROOT" wrapper/qt_entry.py
 # Ship one isolated import helper; the installation never depends on system Python modules.
 "$PYTHON" -m PyInstaller --noconfirm --clean --onefile --name swextract \
@@ -26,6 +26,9 @@ rm -rf "$APPDIR"
     --workpath "$ROOT/extract-work" --specpath "$ROOT" tools/linux/import_game.py
 "$PYTHON" tools/build_hactool.py --src "$PWD/$ROOT/hactool-src" --out "$PWD/$ROOT/hactool"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/wrapper"
+# Host GTK Python does not necessarily have certifi installed; ship the same CA roots.
+"$PYTHON" -c 'import certifi, shutil, sys; shutil.copyfile(certifi.where(), sys.argv[1])' \
+    "$APPDIR/usr/share/wrapper/ca-bundle.pem"
 cp -R "$ROOT/dist/swqt" "$APPDIR/usr/bin/"
 cp "$ROOT/dist/swextract" "$ROOT/hactool/hactool" "$APPDIR/usr/bin/"
 cp "$ROOT/hactool/LICENSE" "$APPDIR/usr/bin/hactool-LICENSE.txt"
