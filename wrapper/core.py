@@ -485,6 +485,14 @@ def recover_completed_code(root, installed, state, emit):
         return False
     if b"[gamebuild] done in " not in tail or b"-> NOT READY" in tail:
         return False
+    # A portable folder might have moved to a different CPU. An old result
+    # is reusable only when the official compiler's logged target matches.
+    target = cpu_target()
+    if target not in ("x86-64-v2", "x86-64-v3"):
+        return False
+    targets = [line for line in tail.splitlines() if line.startswith(b"[gamebuild] target")]
+    if not targets or ("-march=" + target).encode() not in targets[-1]:
+        return False
     state["built_digest"] = state["official_digest"]
     state["built_cpu"] = cpu_target()
     write_state(root, state)
