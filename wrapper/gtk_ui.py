@@ -287,6 +287,11 @@ class Window(Gtk.Window):
             self.alert(str(error))
             return
         self.source.set_text("")
+        self.current_custom = False
+        self.custom.set_active(False)
+        self.pr_checks = []
+        for child in self.pr_list.get_children():
+            self.pr_list.remove(child)
         for entry in self.packages.values():
             entry.set_text("")
         self.game_status()
@@ -316,7 +321,7 @@ class Window(Gtk.Window):
         return None
 
     def pick(self, *_):
-        dialog = Gtk.FileChooserDialog(title="Pasta com os arquivos do jogo", parent=self,
+        dialog = Gtk.FileChooserDialog(title=tr("Game files", self.language), parent=self,
              action=Gtk.FileChooserAction.SELECT_FOLDER,
              buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
                       Gtk.STOCK_OPEN, Gtk.ResponseType.OK))
@@ -389,6 +394,7 @@ class Window(Gtk.Window):
             return
         self.progress_box.hide()
         self.form.show_all()
+        self.custom_toggled()
 
     def close_window(self, *_):
         if self.running:
@@ -492,6 +498,7 @@ class Window(Gtk.Window):
                     self.show_all()
                     self.progress_box.hide()
                     self.form.show_all()
+                    self.custom_toggled()
                     self.game_status()
                 else:
                     self.reveal(tr("Operation cancelled.", self.language))
@@ -520,6 +527,7 @@ def run(root, selftest=False, autoplay=True):
         GLib.idle_add(lambda: window.start(None) or False)
     else:
         window.show_all()
+        window.custom_toggled()
         window.progress_box.hide()
     Gtk.main()
     return 0
