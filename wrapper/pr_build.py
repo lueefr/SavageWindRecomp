@@ -99,9 +99,14 @@ def custom_runtime(root, state):
 def _run(argv, cwd, emit, cancel, logfile):
     check_cancel(cancel)
     emit("stage", "Running: " + " ".join(argv[:4]) + "...", None)
+    # Do not inject the portable AppImage/PyInstaller library paths into host tools.
+    environment = dict(os.environ)
+    for name in ("LD_LIBRARY_PATH", "LD_PRELOAD", "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH",
+                 "PYTHONPATH", "PYTHONHOME", "APPIMAGE", "APPDIR", "OWD"):
+        environment.pop(name, None)
     process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, start_new_session=True,
-                               stdin=subprocess.DEVNULL, bufsize=0)
+                               stdin=subprocess.DEVNULL, bufsize=0, env=environment)
     pending = bytearray()
     try:
         with selectors.DefaultSelector() as sel:
