@@ -199,7 +199,7 @@ class Window(Gtk.Window):
                              "Compile runtime", "Package AppImage", "Publish AppImage"]
         self._source_mode = False
         self.step_labels = []
-        for name in self.step_names:
+        for name in range(max(len(self.step_names), len(self.source_steps))):
             label = Gtk.Label()
             label.set_halign(Gtk.Align.START)
             self.step_labels.append(label)
@@ -256,9 +256,11 @@ class Window(Gtk.Window):
     def mark_step(self, step):
         self._step_current = step
         names = self.source_steps if self._source_mode else self.step_names
-        for i, name in enumerate(names):
-            mark = "✓" if i < step else "▶" if i == step else "○"
-            self.step_labels[i].set_text(mark + "  " + tr(name, self.language))
+        for i, label in enumerate(self.step_labels):
+            label.set_visible(i < len(names))
+            if i < len(names):
+                mark = "✓" if i < step else "▶" if i == step else "○"
+                label.set_text(mark + "  " + tr(names[i], self.language))
 
     def test_toggled(self, *_):
         active = self.test_branch.get_active()
@@ -363,6 +365,7 @@ class Window(Gtk.Window):
         self.show_all()
         self.form.hide()
         self.back_button.hide()
+        self.mark_step(getattr(self, "_step_current", -1))
         self.log_expander.set_expanded(False)
 
     def phase(self, message):
