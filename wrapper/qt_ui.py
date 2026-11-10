@@ -403,7 +403,7 @@ class Window(QWidget):
     def start(self, source):
         if self.running:
             return
-        if source and not isinstance(source, dict) and not valid_game(source):
+        if source and source != "__reuse__" and not isinstance(source, dict) and not valid_game(source):
             QMessageBox.warning(self, tr("Invalid game files", self.language), tr("Please select a folder containing exefs/ and romfs/.", self.language))
             return
         self.cancel_event = threading.Event()
@@ -429,9 +429,9 @@ class Window(QWidget):
                 if self.cancel_event.is_set():
                     raise Cancelled()
             return bool(answer and answer[0])
+        prs = (self.selected_prs() if self.custom.isChecked() else []) if self.prs_changed else None
         def work():
             try:
-                prs = (self.selected_prs() if self.custom.isChecked() else []) if self.prs_changed else None
                 result = Pipeline(self.root, emit, ask, self.cancel_event, prs=prs).run(source)
                 self.events.put(("done", result))
             except Cancelled:
