@@ -62,6 +62,56 @@ class HiddenLauncherTests(unittest.TestCase):
             self.assertEqual(result, 0)
             show.assert_called_once()
 
+    def test_existing_files_choose_reuse_without_import(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.installed(root)
+            window = qt_ui.Window(root, autoplay=False)
+            try:
+                self.assertFalse(window.source.isEnabled())
+                self.assertFalse(window.tabs.isTabEnabled(1))
+                self.assertIn("AppImage missing", window.existing_label.text())
+                with mock.patch.object(window, "start") as start:
+                    window.install_files()
+                start.assert_called_once_with("__reuse__")
+            finally:
+                window.close()
+
+    def test_pr_tab_keeps_nsp_source_selection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            window = qt_ui.Window(root, autoplay=False)
+            try:
+                files = {}
+                for name in ("base", "update", "keys"):
+                    path = root / (name + ".nsp")
+                    path.write_bytes(b"test")
+                    window.packages[name].setText(str(path))
+                    files[name] = str(path)
+                window.tabs.setCurrentIndex(1)
+                window.tabs.setCurrentIndex(2)
+                self.assertEqual(window.source_tab, 1)
+                with mock.patch.object(window, "start") as start:
+                    window.install_files()
+                start.assert_called_once_with(files)
+            finally:
+                window.close()
+
+    def test_gui_language_defaults_to_english_and_persists(self):
+        from wrapper.i18n import get_language
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            window = qt_ui.Window(root, autoplay=False)
+            try:
+                self.assertEqual(window.language, "en")
+                self.assertEqual(window.form.title(), "Game files")
+                index = window.language_box.findData("pt-BR")
+                window.language_box.setCurrentIndex(index)
+                self.assertEqual(window.form.title(), "Arquivos do jogo")
+                self.assertEqual(get_language(root), "pt-BR")
+            finally:
+                window.close()
+
     def test_needed_work_reveals_progress_and_keeps_log_collapsed(self):
         with tempfile.TemporaryDirectory() as folder:
             window = qt_ui.Window(Path(folder), autoplay=False)
