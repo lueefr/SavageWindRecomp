@@ -31,6 +31,7 @@ class Window(QWidget):
         self.source_tab = 0
         state = read_state(self.root)
         self.current_custom = state.get("runtime_source") == "custom"
+        self.current_test = state.get("runtime_source") == "test"
         self.has_game = valid_game(self.root / "root")
         self.old_game = valid_game(self.root / "extracted")
         self.autostart = bool(autoplay and self.has_game and installed_runtime(self.root, state))
@@ -127,6 +128,15 @@ class Window(QWidget):
         self.runtime_box = QGroupBox()
         self.label(self.runtime_box, "Runtime source", "setTitle")
         runtime_fields = QVBoxLayout(self.runtime_box)
+        self.test_branch = QCheckBox()
+        self.label(self.test_branch, "Build upstream test branch (no PRs)", "setText")
+        self.test_branch.setChecked(self.current_test)
+        self.test_branch.toggled.connect(self.test_toggled)
+        runtime_fields.addWidget(self.test_branch)
+        self.test_info = QLabel()
+        self.label(self.test_info, "Compiles the latest upstream test commit locally; no pull requests are applied.")
+        self.test_info.setWordWrap(True)
+        runtime_fields.addWidget(self.test_info)
         self.custom = QCheckBox()
         self.label(self.custom, "Build from selected pull requests", "setText")
         self.custom.setChecked(self.current_custom)
@@ -146,7 +156,7 @@ class Window(QWidget):
         self.custom.toggled.connect(self.custom_toggled)
         self.custom_toggled(self.current_custom)
         self.tabs.addTab(self.runtime_box, "")
-        self.tab_labels.append((self.runtime_box, "Pull requests"))
+        self.tab_labels.append((self.runtime_box, "Source builds"))
 
         actions = QHBoxLayout()
         self.install = QPushButton()
@@ -223,7 +233,14 @@ class Window(QWidget):
         self.mark_step(getattr(self, "_step_current", -1))
         self.game_status()
 
+    def test_toggled(self, checked):
+        if checked:
+            self.custom.setChecked(False)
+        self.test_info.setVisible(checked)
+
     def custom_toggled(self, checked):
+        if checked:
+            self.test_branch.setChecked(False)
         self.pr_intro.setVisible(checked)
         self.pr_refresh.setVisible(checked)
         self.pr_list.setVisible(checked)
@@ -270,7 +287,7 @@ class Window(QWidget):
             tr("AppImage detected." if installed_runtime(self.root, state)
                else "AppImage missing — setup required.", self.language))
         self.delete_button.setEnabled(any((self.root / p).exists() for p in
-            ("root", "game", "extracted", "SavageWind-official.AppImage", "SavageWind-custom.AppImage")))
+            ("root", "game", "extracted", "SavageWind-official.AppImage", "SavageWind-custom.AppImage", "SavageWind-test.AppImage")))
 
     def delete_installation(self):
         if self.running:
@@ -292,7 +309,9 @@ class Window(QWidget):
             return
         self.source.clear()
         self.current_custom = False
+        self.current_test = False
         self.custom.setChecked(False)
+        self.test_branch.setChecked(False)
         self.pr_list.clear()
         for field in self.packages.values():
             field.clear()
@@ -344,11 +363,11 @@ class Window(QWidget):
             field.setText(picked)
 
     def install_files(self):
-        self.prs_changed = bool(self.custom.isChecked() and self.selected_prs())
+        self.prs_changed = self.test_branch.isChecked() or bool(self.custom.isChecked() and self.selected_prs())
         if self.custom.isChecked() and not self.prs_changed and not self.current_custom:
             QMessageBox.warning(self, "Savage Wind", tr("Select at least one pull request.", self.language))
             return
-        if not self.custom.isChecked():
+        if not self.custom.isChecked() and not self.test_branch.isChecked():
             self.prs_changed = True
         if valid_game(self.root / "root") or valid_game(self.root / "extracted"):
             self.start("__reuse__")
@@ -435,7 +454,8 @@ class Window(QWidget):
                 if self.cancel_event.is_set():
                     raise Cancelled()
             return bool(answer and answer[0])
-        prs = (self.selected_prs() if self.custom.isChecked() else []) if self.prs_changed else None
+        prs = ("test" if self.test_branch.isChecked() else
+               self.selected_prs() if self.custom.isChecked() else []) if self.prs_changed else None
         def work():
             try:
                 result = Pipeline(self.root, emit, ask, self.cancel_event, prs=prs).run(source)
