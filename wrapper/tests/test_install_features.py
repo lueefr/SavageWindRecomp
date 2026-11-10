@@ -90,6 +90,81 @@ class InstallerFeatures(unittest.TestCase):
             self.assertIsNone(pr_build.custom_runtime(root, state))
             self.assertIsNone(core.installed_runtime(root, state))
 
+    def test_test_appimage_requires_recorded_revision(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image = root / "SavageWind-test.AppImage"
+            image.write_bytes(b"\x7fELF" + b"x" * 1024)
+            stat = image.stat()
+            state = {"runtime_source": "test", "test_digest": "b" * 64,
+                     "test_commit": "a" * 40, "test_size": stat.st_size,
+                     "test_mtime_ns": stat.st_mtime_ns}
+            self.assertEqual(pr_build.test_runtime(root, state), image)
+            self.assertEqual(core.installed_runtime(root, state), image)
+            state["test_size"] += 1
+            self.assertIsNone(pr_build.test_runtime(root, state))
+            self.assertIsNone(core.installed_runtime(root, state))
+
+    def test_test_branch_build_does_not_apply_pull_requests(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            revision = "b" * 40
+            calls = []
+            def fake_run(argv, cwd, emit, cancel, logfile):
+                calls.append(argv)
+                if argv[:2] == ["git", "clone"]:
+                    Path(argv[-1]).mkdir()
+                if "tools/linux/package.sh" in argv:
+                    output = Path(cwd) / "build/dist"
+                    # cwd is the checkout (source/) during compilation.
+                    output.mkdir(parents=True, exist_ok=True)
+                    (output / "Savage_Wind-test-x86_64.AppImage").write_bytes(
+                        b"\x7fELF" + b"x" * 1_100_000)
+            with mock.patch.object(pr_build.shutil, "which", return_value="/usr/bin/tool"):
+                with mock.patch.object(pr_build, "_run", side_effect=fake_run):
+                    with mock.patch.object(pr_build.subprocess, "run",
+                                           return_value=mock.Mock(stdout=revision + "\n")):
+                        result = pr_build.build_test_appimage(
+                            root, lambda *_: None, threading.Event())
+            self.assertEqual(result["path"], root / "SavageWind-test.AppImage")
+            self.assertEqual(result["commit"], revision)
+            self.assertEqual(result["selection"], "test:" + revision)
+            self.assertTrue(result["path"].is_file())
+            self.assertTrue(any(x[:2] == ["git", "clone"] and "test" in x for x in calls))
+            self.assertFalse(any("refs/pull/" in " ".join(x) for x in calls))
+            self.assertFalse(any(x[:2] == ["make", "appimage"] for x in calls))
+
+    def test_test_branch_pipeline_rebuilds_only_when_switching_runtime(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            create_game(root)
+            (root / "game/save").mkdir(parents=True)
+            (root / "game/save/slot.sav").write_bytes(b"save")
+            test_image = root / "SavageWind-test.AppImage"
+            test_image.write_bytes(b"\x7fELF" + b"test")
+            stat = test_image.stat()
+            result = {"path": test_image, "digest": "b" * 64,
+                      "commit": "c" * 40, "size": stat.st_size,
+                      "mtime_ns": stat.st_mtime_ns, "selection": "test:" + "c" * 40}
+            def build_game(root_, binary, emit, cancel):
+                (root_ / "game/swgame.so").write_bytes(b"recompiled")
+                (root_ / "game/swgame.so.id").write_bytes(b"build-id")
+            with mock.patch.object(pr_build, "build_test_appimage", return_value=result) as build:
+                with mock.patch.object(core, "build_game", side_effect=build_game):
+                    with mock.patch.object(core, "fetch_latest", side_effect=AssertionError("official lookup")):
+                        with mock.patch.object(core.subprocess, "Popen") as launch:
+                            launch.return_value.pid = 42
+                            answer = core.Pipeline(root, lambda *_: None, lambda *_: True,
+                                                   threading.Event(), prs="test").run("__reuse__")
+            self.assertEqual(answer, "launched")
+            build.assert_called_once()
+            state = core.read_state(root)
+            self.assertEqual(state["runtime_source"], "test")
+            self.assertEqual(state["test_commit"], "c" * 40)
+            self.assertEqual(state["built_digest"], "b" * 64)
+            self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"save")
+            self.assertEqual(launch.call_args.args[0][0], str(test_image))
+
     def test_listing_filters_wrong_base_and_trims_description(self):
         sha = "b" * 40
         items = [
