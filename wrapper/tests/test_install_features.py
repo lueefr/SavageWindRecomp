@@ -112,27 +112,45 @@ class InstallerFeatures(unittest.TestCase):
             calls = []
             def fake_run(argv, cwd, emit, cancel, logfile):
                 calls.append(argv)
-                if argv[:2] == ["git", "clone"]:
-                    Path(argv[-1]).mkdir()
                 if "tools/linux/package.sh" in argv:
-                    output = Path(cwd) / "build/dist"
-                    # cwd is the checkout (source/) during compilation.
+                    output = Path(cwd) / "source/build/dist"
                     output.mkdir(parents=True, exist_ok=True)
                     (output / "Savage_Wind-test-x86_64.AppImage").write_bytes(
                         b"\x7fELF" + b"x" * 1_100_000)
-            with mock.patch.object(pr_build.shutil, "which", return_value="/usr/bin/tool"):
+            with mock.patch.object(pr_build, "bundled_builder",
+                                   return_value=(root / "rootfs", root / "seed", root / "bwrap")):
                 with mock.patch.object(pr_build, "_run", side_effect=fake_run):
-                    with mock.patch.object(pr_build.subprocess, "run",
-                                           return_value=mock.Mock(stdout=revision + "\n")):
-                        result = pr_build.build_test_appimage(
-                            root, lambda *_: None, threading.Event())
+                    with mock.patch.object(pr_build, "_capture", return_value=revision):
+                        with mock.patch.object(pr_build, "seed_sources") as seed:
+                            result = pr_build.build_test_appimage(
+                                root, lambda *_: None, threading.Event())
             self.assertEqual(result["path"], root / "SavageWind-test.AppImage")
             self.assertEqual(result["commit"], revision)
             self.assertEqual(result["selection"], "test:" + revision)
             self.assertTrue(result["path"].is_file())
-            self.assertTrue(any(x[:2] == ["git", "clone"] and "test" in x for x in calls))
+            self.assertTrue(any("git" in x and "clone" in x and "test" in x for x in calls))
             self.assertFalse(any("refs/pull/" in " ".join(x) for x in calls))
+            self.assertFalse(any("podman" in " ".join(x) for x in calls))
             self.assertFalse(any(x[:2] == ["make", "appimage"] for x in calls))
+            seed.assert_called_once()
+
+    def test_source_builder_never_uses_host_git_or_podman(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder)
+            command = pr_build.sandbox_command(work / "rootfs", work / "bwrap",
+                                                work / "source", ["clang", "--version"])
+            self.assertEqual(command[0], str(work / "bwrap"))
+            self.assertIn("--unshare-net", command)
+            self.assertNotIn("podman", command)
+            self.assertNotIn("--ro-bind-try", command)
+            self.assertNotIn(str(work / "game"), command)
+            self.assertEqual(command[-2:], ["clang", "--version"])
+
+    def test_builder_reports_missing_bundled_toolchain(self):
+        with mock.patch.dict("os.environ", {"SAVAGEWIND_BUILDER_ROOT": "/nonexistent",
+                                           "SAVAGEWIND_BWRAP": "/nonexistent"}):
+            with self.assertRaisesRegex(core.InstallError, "embedded source-build toolchain"):
+                pr_build.bundled_builder()
 
     def test_test_branch_pipeline_rebuilds_only_when_switching_runtime(self):
         with tempfile.TemporaryDirectory() as folder:
