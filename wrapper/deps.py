@@ -13,7 +13,8 @@ import time
 from .core import Cancelled, InstallError, check_cancel
 
 
-TOOLS = ("git", "podman")
+# slirp4netns avoids pasta network initialization failures on some rootless hosts.
+TOOLS = ("git", "podman", "slirp4netns")
 
 FAMILIES = {
     "arch": {"arch", "cachyos", "endeavouros", "manjaro", "garuda", "artix"},
@@ -61,10 +62,10 @@ def install_plan(info=None, which=shutil.which, geteuid=os.geteuid):
     if family is None:
         raise InstallError(
             f"Automatic dependency installation is not supported on {info['name']}. "
-            "Install git and podman through your distribution's package manager.")
+            "Install git, podman and slirp4netns through your distribution's package manager.")
     packages = list(missing)
     if "podman" in missing and family == "debian":
-        packages += ["uidmap", "slirp4netns", "fuse-overlayfs"]
+        packages += ["uidmap", "fuse-overlayfs"]
     if "podman" in missing and family == "fedora":
         packages += ["fuse-overlayfs"]
     if "podman" in missing and family == "suse":
