@@ -3,6 +3,7 @@
 The launcher never runs a package manager silently, and yay is never run as root.
 """
 import os
+import errno
 from pathlib import Path
 import shlex
 import shutil
@@ -13,8 +14,8 @@ import time
 from .core import Cancelled, InstallError, check_cancel
 
 
-# slirp4netns avoids pasta network initialization failures on some rootless hosts.
-TOOLS = ("git", "podman", "slirp4netns")
+# Podman 6 uses pasta, not slirp4netns. TUN is checked independently.
+TOOLS = ("git", "podman")
 
 FAMILIES = {
     "arch": {"arch", "cachyos", "endeavouros", "manjaro", "garuda", "artix"},
@@ -62,7 +63,7 @@ def install_plan(info=None, which=shutil.which, geteuid=os.geteuid):
     if family is None:
         raise InstallError(
             f"Automatic dependency installation is not supported on {info['name']}. "
-            "Install git, podman and slirp4netns through your distribution's package manager.")
+            "Install git and podman through your distribution's package manager.")
     packages = list(missing)
     if "podman" in missing and family == "debian":
         packages += ["uidmap", "fuse-overlayfs"]
@@ -196,3 +197,90 @@ def ensure_tools(root, emit, ask, cancel):
         raise InstallError("The following tools are still missing after installation: "
                            + ", ".join(still_missing))
     emit("stage", "Build dependencies installed successfully.", None)
+
+
+def tun_ready(path="/dev/net/tun"):
+    """Check TUN functionality, not merely that the device node exists."""
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+    except OSError as error:
+        if error.errno in (errno.ENOENT, errno.ENODEV, errno.ENXIO):
+            return False
+        raise InstallError(f"TUN device cannot be opened: {error}") from error
+    else:
+        os.close(fd)
+        return True
+
+
+def ensure_tun(root, emit, ask, cancel):
+    """Ask before loading a host kernel module needed by rootless pasta."""
+    if tun_ready():
+        return
+    modprobe = shutil.which("modprobe")
+    if not modprobe:
+        raise InstallError("The /dev/net/tun device is unavailable and modprobe was not found. "
+                           "Check the running kernel modules before starting Podman.")
+    if os.geteuid() == 0:
+        command = [modprobe, "tun"]
+    elif (pkexec := shutil.which("pkexec")):
+        command = [pkexec, modprobe, "tun"]
+    elif (sudo := shutil.which("sudo")):
+        command = [sudo, modprobe, "tun"]
+    else:
+        raise InstallError("The TUN kernel device is unavailable. "
+                           "Administrator permission is needed to load the tun module.")
+    preview = shlex.join(command)
+    if not ask("Rootless Podman networking needs a working /dev/net/tun device. "
+               "The launcher can try to load the kernel's tun module.\n\n"
+               f"Command: {preview}\n\n"
+               "This changes the running kernel state, not your game files. "
+               "Allow this operation?"):
+        raise Cancelled()
+    check_cancel(cancel)
+    emit("stage", "Enabling the kernel TUN device for rootless Podman...", None)
+    if Path(command[0]).name == "sudo":
+        # A password cannot be entered inside a headless worker; use the terminal.
+        metadata = Path(root) / ".sw-wrapper"
+        if metadata.is_symlink():
+            raise InstallError("Installer metadata directory cannot be a symlink.")
+        metadata.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="tun-check-", dir=metadata) as folder:
+            status = Path(folder) / "status"
+            script = (shlex.join(command) + "\n"
+                      + "result=$?\n"
+                      + f"printf '%s\\n' \"$result\" > {shlex.quote(str(status))}\n"
+                      + "exit \"$result\"\n")
+            terminal = terminal_command(script)
+            if terminal is None:
+                raise InstallError(f"Cannot open a terminal for authorization. Run: {preview}")
+            process = subprocess.Popen(terminal, start_new_session=True, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       env=host_environment())
+            started = time.monotonic()
+            while not status.is_file():
+                check_cancel(cancel)
+                if time.monotonic() - started > 120:
+                    raise InstallError("Loading the tun module timed out.")
+                if process.poll() is not None and time.monotonic() - started > 5:
+                    raise InstallError("The authorization terminal closed without a result.")
+                time.sleep(0.2)
+            try:
+                code = int(status.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError) as error:
+                raise InstallError("Could not read the tun module loader result.") from error
+    else:
+        try:
+            result = subprocess.run(command, env=host_environment(),
+                                    capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise InstallError(f"Could not load the tun kernel module: {error}") from error
+        code = result.returncode
+        if code:
+            emit("log", "TUN module loader: " + (result.stderr or result.stdout)[-900:], None)
+    if code:
+        raise InstallError("The tun module could not be loaded. Check the matching kernel "
+                           "modules, security policy, or reboot after a kernel update.")
+    if not tun_ready():
+        raise InstallError("The tun module command finished, but /dev/net/tun still does not "
+                           "work. Rootless pasta cannot be used on this kernel.")
+    emit("stage", "Kernel TUN device is available.", None)
