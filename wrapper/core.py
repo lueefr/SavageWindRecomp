@@ -663,6 +663,11 @@ def _run_game_build(root, binary, emit, cancel, source):
     env["SAVAGEWIND_LAUNCHER_EXTRACT"] = ""
     env["SAVAGEWIND_HIDDEN"] = "1"
     log_path = root / ".sw-wrapper/build.log"
+    upstream_log = game_data(root) / "savagewind.log"
+    try:
+        upstream_offset = upstream_log.stat().st_size
+    except OSError:
+        upstream_offset = 0
     # The upstream's test setup entry returns zero even on a failed setup.
     # A completed compile and a valid library can recover from a missing READY
     # message or a failure after linking, but never override explicit NOT READY.
@@ -776,6 +781,25 @@ def _run_game_build(root, binary, emit, cancel, source):
         if proc.returncode and not (compiled or entered_game):
             reasons.append(f"o processo terminou com código {proc.returncode}")
         detail = "; ".join(reasons) or f"estado inesperado, código de saída {proc.returncode}"
+        # The upstream logs gamebuild failures to its own data root, not stdout.
+        # Surface only diagnostic lines written during this attempt.
+        try:
+            with upstream_log.open("rb") as stream:
+                size = stream.seek(0, os.SEEK_END)
+                stream.seek(min(upstream_offset, size))
+                diagnostics = stream.read(256 * 1024).decode("utf-8", "replace")
+            relevant = [line.strip() for line in diagnostics.splitlines()
+                        if line.startswith(("[gamebuild]", "[launcher] FAILED",
+                                            "[launcher] game code:", "[paths] refusing"))]
+            for line in relevant[-12:]:
+                emit("log", "[upstream] " + line[:700], None)
+            failures = [line for line in relevant if
+                        "failed" in line.lower() or "couldn't" in line.lower()
+                        or "refusing" in line.lower()]
+            if failures:
+                detail += "; upstream: " + failures[-1][:300]
+        except OSError:
+            pass
         emit("log", f"[wrapper] Falha ao validar o código nativo: {detail}", None)
         raise InstallError(
             f"O código nativo não foi validado: {detail}. "
