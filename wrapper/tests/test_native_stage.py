@@ -127,6 +127,34 @@ class NativeStageTests(unittest.TestCase):
             self.assertEqual((root / "game/save/progress.sav").read_bytes(), b"saved-data")
             self.assertFalse((source / "swgame.so").exists())
 
+    def test_child_builder_receives_real_upstream_layout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = game(root)
+            core.write_state(root, {"runtime_source": "test"})
+            executable = root / "fake-upstream.py"
+            executable.write_text(
+                "#!/usr/bin/env python3\n"
+                "import os, pathlib, sys\n"
+                "directory = pathlib.Path(sys.argv[1])\n"
+                "assert directory.name == 'extracted'\n"
+                "assert pathlib.Path(os.environ['SAVAGEWIND_DATA_ROOT']) == directory.parent\n"
+                "assert (directory / 'exefs/main').is_file()\n"
+                "(directory / 'swgame.so').write_bytes(b'native-code')\n"
+                "(directory / 'swgame.so.id').write_text('compatible-id')\n"
+                "print('[launcher] setup: Game files ready -> READY', flush=True)\n",
+                encoding="utf-8")
+            executable.chmod(0o755)
+            events = []
+            core.build_game(root, executable, lambda *e: events.append(e),
+                            threading.Event())
+            self.assertTrue(core.valid_game(source))
+            self.assertEqual((root / "game/swgame.so").read_bytes(), b"native-code")
+            self.assertEqual((root / "game/swgame.so.id").read_text(), "compatible-id")
+            self.assertEqual((root / "game/save/progress.sav").read_bytes(), b"saved-data")
+            self.assertFalse((root / ".sw-wrapper/code-stage").exists())
+            self.assertTrue(any(e[0] == "progress" and e[2] == 100 for e in events))
+
     def test_monitor_supports_upstream_extracted_layout(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
