@@ -81,7 +81,7 @@ class Window(QWidget):
         self.browse_source.clicked.connect(self.pick)
         choose_row.addWidget(self.browse_source)
         extracted_fields.addLayout(choose_row)
-        self.tabs.addTab(extracted_page, "")
+        self.tabs.addTab(extracted_page, tr("Extracted folder", self.language))
         self.tab_labels.append((extracted_page, "Extracted folder"))
 
         packages_page = QWidget()
@@ -108,7 +108,7 @@ class Window(QWidget):
             row.addWidget(browse)
             packages_fields.addLayout(row)
             self.packages[name] = field
-        self.tabs.addTab(packages_page, "")
+        self.tabs.addTab(packages_page, tr("NSP / XCI", self.language))
         self.tab_labels.append((packages_page, "NSP / XCI"))
         self.tabs.currentChanged.connect(self.remember_source_tab)
         fields.addWidget(self.tabs)
@@ -160,7 +160,7 @@ class Window(QWidget):
         self.custom.toggled.connect(self.custom_toggled)
         self.custom_toggled(self.current_custom)
         self.test_toggled(self.current_test)
-        self.tabs.addTab(self.runtime_box, "")
+        self.tabs.addTab(self.runtime_box, tr("Source builds", self.language))
         self.tab_labels.append((self.runtime_box, "Source builds"))
 
         actions = QHBoxLayout()
