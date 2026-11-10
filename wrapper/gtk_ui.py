@@ -427,9 +427,9 @@ class Window(Gtk.Window):
                 if self.cancel_event.is_set():
                     raise Cancelled()
             return bool(answer and answer[0])
+        prs = (self.selected_prs() if self.custom.get_active() else []) if self.prs_changed else None
         def work():
             try:
-                prs = (self.selected_prs() if self.custom.get_active() else []) if self.prs_changed else None
                 result = Pipeline(self.root, emit, ask, self.cancel_event, prs=prs).run(source)
                 self.events.put(("done", result))
             except Cancelled:
