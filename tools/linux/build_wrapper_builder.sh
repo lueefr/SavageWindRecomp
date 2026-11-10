@@ -17,10 +17,9 @@ mkdir -p "$OUTPUT/rootfs" "$OUTPUT/seed/build" "$OUTPUT/libs"
 git clone --depth 1 --branch test https://github.com/Revivedx/SavageWindRecomp.git "$SOURCE"
 git -C "$SOURCE" rev-parse HEAD > "$OUTPUT/upstream-commit"
 cp "$SOURCE/tools/linux/Containerfile" "$ROOT/Containerfile"
-# Pin Ubuntu packages to a consistent historical snapshot. Live Jammy indices may
-# still advertise removed versions (e.g. perl-base .10 when only .9 is published).
-# Ubuntu 22.04's apt supports the official snapshot service.
-sed -i '/^FROM docker.io\/library\/ubuntu:22.04$/a RUN sed -i "s|^deb |deb [snapshot=20261001T000000Z] |g" /etc/apt/sources.list \&\& rm -rf /var/lib/apt/lists/*' "$ROOT/Containerfile"
+# Bootstrap CA roots from the base mirror before enabling Ubuntu's HTTPS snapshot.
+# Jammy's live mirror may reference removed package revisions in its updates index.
+sed -i '/^FROM docker.io\/library\/ubuntu:22.04$/a RUN apt-get update \&\& apt-get install -y --no-install-recommends ca-certificates \&\& update-ca-certificates \&\& sed -i "s|^deb |deb [snapshot=20261001T000000Z] |g" /etc/apt/sources.list \&\& rm -rf /var/lib/apt/lists/*' "$ROOT/Containerfile"
 cat >> "$ROOT/Containerfile" <<'DOCKER'
 # The launcher ships bubblewrap and a complete, preprepared source build toolchain.
 RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap \
