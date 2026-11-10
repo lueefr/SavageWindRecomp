@@ -210,7 +210,7 @@ def _capture(command, source):
 
 def seed_sources(seed, source, cancel):
     """Copy prebuilt, version-pinned dependencies; no host packages or online pip."""
-    for suffix in ("linux/src", "linux/x86_64/deps", "linux/x86_64/gen-venv", "zig"):
+    for suffix in ("linux/src", "linux/x86_64/deps", "linux/x86_64/gen-venv", "zig", "zig-dl"):
         check_cancel(cancel)
         item = seed / "build" / suffix
         if not item.is_dir() or item.is_symlink():
