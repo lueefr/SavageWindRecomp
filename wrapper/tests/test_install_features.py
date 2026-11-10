@@ -144,6 +144,14 @@ class InstallerFeatures(unittest.TestCase):
             self.assertNotIn("podman", command)
             self.assertNotIn("--ro-bind-try", command)
             self.assertNotIn(str(work / "game"), command)
+            # GitHub source retrieval must have network access, but never relax
+            # the mount isolation or allow untrusted build commands to opt out.
+            fetch = pr_build.sandbox_command(work / "rootfs", work / "bwrap",
+                                             work / "source", ["git", "--version"],
+                                             network=True)
+            self.assertNotIn("--unshare-net", fetch)
+            self.assertIn("--unshare-user", fetch)
+            self.assertEqual(fetch[-2:], ["git", "--version"])
             self.assertEqual(command[-2:], ["clang", "--version"])
 
     def test_untrusted_checkout_cannot_redirect_compiler_cache(self):
