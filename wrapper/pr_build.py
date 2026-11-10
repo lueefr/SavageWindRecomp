@@ -12,7 +12,6 @@ import selectors
 import shutil
 import subprocess
 import tempfile
-import threading
 import urllib.request
 
 from .core import Cancelled, InstallError, check_cancel, sha256, stop_process, tls_context
@@ -166,8 +165,17 @@ def build_pr_appimage(root, prs, emit, cancel):
                 _run(["git", "-c", "user.name=Savage Wind Portable",
                       "-c", "user.email=portable@localhost", "merge", "--no-edit",
                       "--no-ff", actual], source, emit, cancel, output)
-            emit("stage", "Compiling the custom AppImage in Podman...", None)
-            _run(["make", "appimage"], source, emit, cancel, output)
+            # Run all PR-controlled build scripts inside a rootless container.
+            # Never execute the PR's Makefile or appimage.sh directly on the host.
+            emit("stage", "Compiling the custom AppImage in an isolated Podman container...", None)
+            image = "localhost/savagewind-pr-build:amd64"
+            _run(["podman", "build", "--arch", "amd64", "-t", image, "-f",
+                  "tools/linux/Containerfile", "tools/linux"], source, emit, cancel, output)
+            run = ["podman", "run", "--rm", "--arch", "amd64",
+                   "-v", f"{source}:/src", "-w", "/src",
+                   "-e", "SYSROOT=/src/build/linux/aarch64/sysroot", image]
+            _run(run + ["tools/linux/gen_helper.sh", "x86_64"], source, emit, cancel, output)
+            _run(run + ["tools/linux/package.sh", "x86_64"], source, emit, cancel, output)
             results = list((source / "build/dist").glob("Savage_Wind-*-x86_64.AppImage"))
             if len(results) != 1 or results[0].is_symlink() or results[0].stat().st_size < 1024 * 1024:
                 raise InstallError("The build did not produce exactly one x86_64 AppImage.")
