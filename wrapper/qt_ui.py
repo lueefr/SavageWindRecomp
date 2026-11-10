@@ -146,7 +146,7 @@ class Window(QWidget):
         self.custom.setChecked(self.current_custom)
         runtime_fields.addWidget(self.custom)
         self.pr_intro = QLabel()
-        self.label(self.pr_intro, "Choose one or more PRs; each contains third-party code and may conflict. Requires git and Podman.")
+        self.label(self.pr_intro, "Select PRs to merge with upstream test. The build tools are included in this AppImage.")
         self.pr_intro.setWordWrap(True)
         runtime_fields.addWidget(self.pr_intro)
         self.pr_refresh = QPushButton()
