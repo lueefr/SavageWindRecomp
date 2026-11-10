@@ -139,7 +139,8 @@ class Window(Gtk.Window):
         self.pr_list = Gtk.ListBox()
         self.pr_scroll.add(self.pr_list)
         runtime_box.pack_start(self.pr_scroll, False, False, 0)
-        self.form.pack_start(runtime_box, False, False, 0)
+        self.tabs.append_page(runtime_box, Gtk.Label())
+        self.tab_labels.append((runtime_box, "Pull requests"))
         actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.install_button = Gtk.Button()
         self.label(self.install_button, "Install and play", "set_label")
@@ -348,7 +349,7 @@ class Window(Gtk.Window):
         if valid_game(self.root / "root") or valid_game(self.root / "extracted"):
             self.start("__reuse__")
             return
-        if self.tabs.get_current_page() == 0:
+        if self.tabs.get_current_page() != 1:
             source = self.source.get_text().strip()
             if not valid_game(source):
                 self.alert(tr("Please select a folder containing exefs/ and romfs/.", self.language))
