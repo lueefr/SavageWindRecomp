@@ -353,6 +353,54 @@ class InstallerFeatures(unittest.TestCase):
             self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"save")
             self.assertEqual(launch.call_args.args[0][0], str(test_image))
 
+    def test_existing_test_appimage_is_reused_when_upstream_commit_matches(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            create_game(root)
+            (root / "game/save").mkdir(parents=True)
+            (root / "game/save/slot.sav").write_bytes(b"important-save")
+            image = root / "SavageWind-test.AppImage"
+            image.write_bytes(b"\x7fELF" + b"x" * 1024)
+            stat = image.stat()
+            sha = "c" * 40
+            core.write_state(root, {
+                "runtime_source": "test", "test_digest": "d" * 64,
+                "test_commit": sha, "test_size": stat.st_size,
+                "test_mtime_ns": stat.st_mtime_ns,
+                "built_digest": "old-version", "built_cpu": core.cpu_target(),
+            })
+            def fake_native(root_, binary, emit, cancel):
+                (root_ / "game/swgame.so").write_bytes(b"native")
+                (root_ / "game/swgame.so.id").write_text("new-id")
+            messages = []
+            with mock.patch.object(pr_build, "upstream_test_head", return_value=sha) as head:
+                with mock.patch.object(pr_build, "build_test_appimage",
+                                       side_effect=AssertionError("unnecessary source rebuild")):
+                    with mock.patch.object(core, "build_game", side_effect=fake_native) as native:
+                        with mock.patch.object(core.subprocess, "Popen") as launch:
+                            launch.return_value.pid = 1234
+                            answer = core.Pipeline(root, lambda *e: messages.append(e),
+                                                   lambda _: True, threading.Event(),
+                                                   prs="test").run("__reuse__")
+            self.assertEqual(answer, "launched")
+            head.assert_called_once()
+            native.assert_called_once()
+            self.assertEqual(core.read_state(root)["built_digest"], "d" * 64)
+            self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"important-save")
+            self.assertTrue(any("Reusing" in str(x) for x in messages))
+
+    def test_remote_test_revision_is_parsed_and_verified(self):
+        sha = "b" * 40
+        with mock.patch.object(pr_build.subprocess, "run",
+                               return_value=mock.Mock(returncode=0,
+                                     stdout=sha + "\trefs/heads/test\n")):
+            self.assertEqual(pr_build.upstream_test_head(), sha)
+        with mock.patch.object(pr_build.subprocess, "run",
+                               return_value=mock.Mock(returncode=0,
+                                     stdout="invalid sha\trefs/heads/test\n")):
+            with self.assertRaises(core.InstallError):
+                pr_build.upstream_test_head()
+
     def test_listing_filters_wrong_base_and_trims_description(self):
         sha = "b" * 40
         items = [
