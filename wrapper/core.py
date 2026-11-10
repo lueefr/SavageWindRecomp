@@ -1041,18 +1041,37 @@ class Pipeline:
             from .pr_build import build_test_appimage, test_runtime
             installed = test_runtime(root, state)
             if self.prs == "test":
-                if not self.ask("Build the latest upstream test branch locally? "
-                                "This is development code that may be unstable. "
-                                "The official AppImage and your saves will be preserved."):
-                    return "setup"
-                result = build_test_appimage(root, self.status, self.cancel, ask=self.ask)
-                installed = result["path"]
-                state.update({
-                    "runtime_source": "test", "test_digest": result["digest"],
-                    "test_commit": result["commit"], "test_size": result["size"],
-                    "test_mtime_ns": result["mtime_ns"],
-                })
-                write_state(root, state)
+                # Reuse the already-built test AppImage when upstream has not moved.
+                # Failed native-code validation must never force another full runtime build.
+                changed = True
+                if installed and state.get("test_commit"):
+                    from .pr_build import upstream_test_head
+                    try:
+                        current = upstream_test_head()
+                        changed = current != state["test_commit"]
+                        if not changed:
+                            self.status("log", "Upstream test has not changed (" +
+                                        current[:12] + "). Reusing the existing AppImage.")
+                    except InstallError as error:
+                        self.status("log", f"Cannot check upstream test for updates: {error}")
+                        if not self.ask("The upstream test revision could not be checked. "
+                                        "Use the existing locally built AppImage? "
+                                        "Choose No to cancel."):
+                            return "setup"
+                        changed = False
+                if changed:
+                    if not self.ask("Build the latest upstream test branch locally? "
+                                    "This is development code that may be unstable. "
+                                    "The official AppImage and your saves will be preserved."):
+                        return "setup"
+                    result = build_test_appimage(root, self.status, self.cancel, ask=self.ask)
+                    installed = result["path"]
+                    state.update({
+                        "runtime_source": "test", "test_digest": result["digest"],
+                        "test_commit": result["commit"], "test_size": result["size"],
+                        "test_mtime_ns": result["mtime_ns"],
+                    })
+                    write_state(root, state)
             if not installed:
                 return "setup"
         elif custom:
