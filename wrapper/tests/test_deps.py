@@ -28,7 +28,7 @@ class Dependencies(unittest.TestCase):
             {"family": "arch", "name": "Arch Linux"},
             which=available("yay", "pacman", "sudo"), geteuid=lambda: 1000)
         self.assertEqual(plan["manager"], "yay")
-        self.assertEqual(plan["commands"], [["yay", "-S", "--needed", "git", "podman", "slirp4netns"]])
+        self.assertEqual(plan["commands"], [["yay", "-S", "--needed", "git", "podman"]])
         self.assertNotIn("sudo", deps.command_preview(plan))
 
     def test_arch_falls_back_to_pacman(self):
@@ -36,21 +36,19 @@ class Dependencies(unittest.TestCase):
             {"family": "arch", "name": "Arch Linux"},
             which=available("pacman", "sudo"), geteuid=lambda: 1000)
         self.assertEqual(plan["commands"], [["sudo", "pacman", "-S", "--needed",
-                                               "git", "podman", "slirp4netns"]])
+                                               "git", "podman"]])
 
-    def test_podman_already_installed_still_installs_slirp(self):
+    def test_podman_does_not_require_obsolete_slirp(self):
         plan = deps.install_plan(
             {"family": "arch", "name": "CachyOS Linux"},
             which=available("git", "podman", "yay"), geteuid=lambda: 1000)
-        self.assertEqual(plan["packages"], ["slirp4netns"])
-        self.assertEqual(plan["commands"],
-                         [["yay", "-S", "--needed", "slirp4netns"]])
+        self.assertIsNone(plan)
 
     def test_ubuntu_installs_rootless_helpers(self):
         plan = deps.install_plan(
             {"family": "debian", "name": "Ubuntu"},
             which=available("git", "apt-get", "pkexec"), geteuid=lambda: 1000)
-        self.assertEqual(plan["packages"], ["podman", "slirp4netns", "uidmap", "fuse-overlayfs"])
+        self.assertEqual(plan["packages"], ["podman", "uidmap", "fuse-overlayfs"])
         self.assertEqual(plan["commands"][0], ["pkexec", "apt-get", "update"])
         self.assertEqual(plan["commands"][1][:4], ["pkexec", "apt-get", "install", "-y"])
 
@@ -139,6 +137,47 @@ class Dependencies(unittest.TestCase):
                             with self.assertRaisesRegex(InstallError, "package manager failed"):
                                 deps.ensure_tools(folder, lambda *_: None, lambda _: True,
                                                   threading.Event())
+
+    def test_tun_detects_missing_kernel_module(self):
+        import errno
+        with mock.patch.object(deps.os, "open",
+                               side_effect=OSError(errno.ENODEV, "No such device")):
+            self.assertFalse(deps.tun_ready())
+
+    def test_tun_existing_device_needs_no_authorization(self):
+        with mock.patch.object(deps, "tun_ready", return_value=True):
+            ask = mock.Mock()
+            deps.ensure_tun(Path.home(), lambda *_: None, ask, threading.Event())
+            ask.assert_not_called()
+
+    def test_declined_tun_does_not_execute_privileged_commands(self):
+        with mock.patch.object(deps, "tun_ready", return_value=False):
+            with mock.patch.object(deps.shutil, "which", side_effect=available("pkexec", "modprobe")):
+                with mock.patch.object(deps.subprocess, "run") as process:
+                    with self.assertRaises(Cancelled):
+                        deps.ensure_tun(Path.home(), lambda *_: None, lambda _: False,
+                                        threading.Event())
+                    process.assert_not_called()
+
+    def test_approved_tun_load_is_rechecked(self):
+        with mock.patch.object(deps, "tun_ready", side_effect=[False, True]):
+            with mock.patch.object(deps.shutil, "which", side_effect=available("pkexec", "modprobe")):
+                with mock.patch.object(deps.subprocess, "run",
+                                       return_value=mock.Mock(returncode=0)) as run:
+                    events = []
+                    deps.ensure_tun(Path.home(), lambda *x: events.append(x),
+                                    lambda _: True, threading.Event())
+                    self.assertEqual(run.call_args.args[0][-2:], ["/usr/bin/modprobe", "tun"])
+                    self.assertTrue(any("available" in entry[1] for entry in events))
+
+    def test_module_not_loaded_reports_kernel_problem(self):
+        with mock.patch.object(deps, "tun_ready", return_value=False):
+            with mock.patch.object(deps.shutil, "which", side_effect=available("pkexec", "modprobe")):
+                with mock.patch.object(deps.subprocess, "run",
+                                       return_value=mock.Mock(returncode=0)):
+                    with self.assertRaisesRegex(InstallError, "does not work"):
+                        deps.ensure_tun(Path.home(), lambda *_: None, lambda _: True,
+                                        threading.Event())
 
     def test_terminal_for_arch_kde(self):
         cmd = deps.terminal_command("echo success", which=available("konsole"))
