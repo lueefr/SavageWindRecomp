@@ -41,6 +41,15 @@ class InstallerFeatures(unittest.TestCase):
             create_game(root)
             (root / "game/save").mkdir(parents=True)
             (root / "game/save/test.sav").write_bytes(b"save")
+            (root / "game/savagewind.ini").write_text("fullscreen=true")
+            (root / "game/configs").mkdir()
+            (root / "game/configs/gamepad.json").write_text("{}")
+            (root / "game/swgame.so").write_bytes(b"compiled")
+            (root / "game/cache").mkdir()
+            (root / "game/cache/old.cache").write_bytes(b"cache")
+            (root / ".sw-wrapper").mkdir()
+            (root / ".sw-wrapper/events.log").write_text("debug")
+            (root / ".sw-wrapper/gui.json").write_text('{"language":"pt-BR"}')
             (root / "SavageWind-official.AppImage").write_bytes(b"\x7fELF")
             (root / "SavageWind-Portable-x86_64.AppImage").write_bytes(b"\x7fELF")
             (root / "my-notes.txt").write_text("keep me")
@@ -49,7 +58,13 @@ class InstallerFeatures(unittest.TestCase):
             self.assertTrue((root / "game/save/test.sav").exists())
             core.reset_install(root, "DELETE")
             self.assertFalse((root / "root").exists())
-            self.assertFalse((root / "game").exists())
+            self.assertTrue((root / "game/save/test.sav").exists())
+            self.assertEqual((root / "game/savagewind.ini").read_text(), "fullscreen=true")
+            self.assertTrue((root / "game/configs/gamepad.json").is_file())
+            self.assertFalse((root / "game/swgame.so").exists())
+            self.assertFalse((root / "game/cache").exists())
+            self.assertFalse((root / ".sw-wrapper/events.log").exists())
+            self.assertTrue((root / ".sw-wrapper/gui.json").is_file())
             self.assertFalse((root / "SavageWind-official.AppImage").exists())
             self.assertTrue((root / "SavageWind-Portable-x86_64.AppImage").exists())
             self.assertEqual((root / "my-notes.txt").read_text(), "keep me")
@@ -110,7 +125,7 @@ class InstallerFeatures(unittest.TestCase):
             root = Path(folder)
             revision = "b" * 40
             calls = []
-            def fake_run(argv, cwd, emit, cancel, logfile):
+            def fake_run(argv, cwd, emit, cancel, logfile, **kwargs):
                 calls.append(argv)
                 if argv[:2] == ["git", "clone"]:
                     source = Path(argv[-1])
