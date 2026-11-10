@@ -111,30 +111,49 @@ def set_language(root, language):
 
 
 # Only human-readable progress needs localization. Raw developer logs are kept intact.
-PROGRESS_EN = (
-    ("Preparando o armazenamento portátil", "Preparing portable storage"),
-    ("Procurando atualizações oficiais", "Checking official updates"),
-    ("Preparando o código nativo do jogo", "Preparing native game code"),
-    ("Compilação recuperada", "Recovered completed compilation"),
-    ("Arquivos do jogo preparados", "Game files prepared"),
-    ("Copiando arquivos do jogo", "Copying game files"),
-    ("Analisando os arquivos do jogo", "Checking game files"),
-    ("Preparando ", "Preparing "),
-    ("Baixando ", "Downloading "),
-    ("Verificando ", "Checking "),
-    ("Migrando ", "Migrating "),
-    ("Recuperando ", "Recovering "),
-    ("Instalando ", "Installing "),
-    ("Iniciando ", "Starting "),
-    ("Organizando ", "Organizing "),
-    ("Recompilação", "Recompilation"),
-    ("Código nativo validado", "Native game code validated"),
+PROGRESS = (
+    ("Preparando o armazenamento portátil", "Preparing portable storage", "Подготовка переносного хранилища", "准备便携存储"),
+    ("Procurando atualizações oficiais", "Checking official updates", "Проверка обновлений", "检查官方更新"),
+    ("Preparando o código nativo do jogo", "Preparing native game code", "Подготовка нативного кода игры", "准备本地游戏代码"),
+    ("Compilação recuperada", "Recovered compilation", "Восстановлена сборка", "已恢复编译"),
+    ("Arquivos do jogo preparados", "Game files prepared", "Файлы игры подготовлены", "游戏文件已准备"),
+    ("Copiando arquivos do jogo", "Copying game files", "Копирование файлов игры", "正在复制游戏文件"),
+    ("Analisando os arquivos do jogo", "Analyzing game files", "Анализ файлов игры", "正在分析游戏文件"),
+    ("Analisando módulos do jogo", "Analyzing game modules", "Анализ модулей игры", "正在分析游戏模块"),
+    ("Identificando os módulos NSO e preparando a geração de C", "Identifying NSO modules and preparing C generation", "Поиск NSO-модулей и подготовка генерации C", "正在识别 NSO 模块并准备生成 C"),
+    ("Gerando C e compilando", "Generating C and compiling", "Генерация C и компиляция", "正在生成 C 并编译"),
+    ("Gerando código C", "Generating C code", "Генерация кода C", "正在生成 C 代码"),
+    ("Vinculando a biblioteca nativa", "Linking native library", "Компоновка нативной библиотеки", "正在链接本地库"),
+    ("Vinculando ", "Linking ", "Компоновка ", "正在链接 "),
+    ("ETA estimado:", "Estimated ETA:", "Расчётное время:", "预计剩余时间："),
+    ("ETA: calculando", "ETA: calculating", "Время: вычисляется", "剩余时间：计算中"),
+    ("até a vinculação", "until linking", "до компоновки", "直到链接"),
+    ("Gerador:", "Generator:", "Генератор:", "生成器："),
+    ("Compilador:", "Compiler:", "Компилятор:", "编译器："),
+    ("funções", "functions", "функций", "函数"),
+    ("objetos compilados", "compiled objects", "скомпилированных объектов", "已编译对象"),
+    ("objetos concluídos", "completed objects", "готовых объектов", "已完成对象"),
+    ("Tempo decorrido:", "Elapsed:", "Прошло:", "已用时间："),
+    ("Decorrido:", "Elapsed:", "Прошло:", "已用时间："),
+    ("partes geradas", "generated chunks", "готовых частей", "已生成分块"),
+    ("partes", "chunks", "частей", "分块"),
+    ("O compilador oficial", "The official compiler", "Официальный компилятор", "官方编译器"),
+    ("Preparando ", "Preparing ", "Подготовка ", "正在准备 "),
+    ("Baixando ", "Downloading ", "Загрузка ", "正在下载 "),
+    ("Verificando ", "Checking ", "Проверка ", "正在检查 "),
+    ("Migrando ", "Migrating ", "Перенос ", "正在迁移 "),
+    ("Recuperando ", "Recovering ", "Восстановление ", "正在恢复 "),
+    ("Instalando ", "Installing ", "Установка ", "正在安装 "),
+    ("Iniciando ", "Starting ", "Запуск ", "正在启动 "),
+    ("Organizando ", "Organizing ", "Организация ", "正在整理 "),
+    ("Recompilação", "Recompilation", "Перекомпиляция", "重新编译"),
+    ("Código nativo validado", "Native game code validated", "Нативный код проверен", "本地代码已验证"),
 )
 
 def progress_text(message, language):
-    if language != "en":
+    if language == "pt-BR":
         return message
-    for original, english in PROGRESS_EN:
-        if message.startswith(original):
-            return english + message[len(original):]
+    idx = {"en": 1, "ru": 2, "zh-Hans": 3}.get(language, 1)
+    for forms in PROGRESS:
+        message = message.replace(forms[0], forms[idx])
     return message
