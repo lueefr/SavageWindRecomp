@@ -44,8 +44,10 @@ def open_prs():
             if not isinstance(number, int) or number <= 0 or not isinstance(commit, str) or not SHA.fullmatch(commit):
                 continue
             body = (item.get("body") or "").strip()
-            summary = next((line.strip("# *>- \t") for line in body.splitlines()
-                            if line.strip("# *>- \t")), "No description provided.")
+            # Prefer the first meaningful line over generic Markdown headings.
+            summary = next((line.strip("-* >\\t") for line in body.splitlines()
+                            if line.strip() and not line.lstrip().startswith(("#", "<", "![", "http", "`", "|"))),
+                           "No description provided.")
             results.append({
                 "number": number,
                 "sha": commit,
