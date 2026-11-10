@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import urllib.request
 
-from .deps import ensure_tools, host_environment
+from .deps import ensure_tools, ensure_tun, host_environment
 
 from .core import Cancelled, InstallError, check_cancel, sha256, stop_process, tls_context
 
@@ -237,7 +237,7 @@ def _image_exists(image):
 
 
 def _prepare_toolchain(source, stage, emit, cancel, logfile):
-    """Install dependencies using rootless podman run; Buildah build rejects slirp4netns."""
+    """Install dependencies using rootless podman run and pasta networking."""
     recipe = _toolchain_recipe(source / "tools/linux/Containerfile")
     digest = hashlib.sha256(recipe.encode("utf-8")).hexdigest()[:20]
     image = f"localhost/savagewind-toolchain:recipe-{digest}"
@@ -246,10 +246,10 @@ def _prepare_toolchain(source, stage, emit, cancel, logfile):
         return image
     container = f"sw-toolchain-{stage.name}"
     emit("stage", "Preparing Linux compiler with rootless Podman...", None)
-    emit("log", "Using podman run with slirp4netns; podman build cannot use this network in rootless mode.", None)
+    emit("log", "Using podman run with pasta; rootless Podman needs /dev/net/tun.", None)
     try:
         _run(["podman", "run", "--name", container, "--arch", "amd64",
-              "--network=slirp4netns", "-e", "DEBIAN_FRONTEND=noninteractive",
+              "--network=pasta", "-e", "DEBIAN_FRONTEND=noninteractive",
               "docker.io/library/ubuntu:22.04", "/bin/sh", "-ec", recipe],
              stage, emit, cancel, logfile)
         check_cancel(cancel)
@@ -287,6 +287,8 @@ def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
             return False
     ensure_tools(root, emit, ask, cancel)
     _podman_ready()
+    # Podman 6 has removed slirp4netns; pasta requires a working host TUN device.
+    ensure_tun(root, emit, ask, cancel)
     work = root / ".sw-wrapper"
     if work.is_symlink():
         raise InstallError("Installer working directory cannot be a symlink.")
@@ -319,7 +321,7 @@ def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
                 raise InstallError("Git returned an invalid source revision.")
             emit("log", f"Source revision: {commit}", None)
             image = _prepare_toolchain(source, stage, emit, cancel, output)
-            run = ["podman", "run", "--rm", "--network=slirp4netns", "--arch", "amd64",
+            run = ["podman", "run", "--rm", "--network=pasta", "--arch", "amd64",
                    "--volume", f"{source}:/src:Z", "--workdir", "/src", image]
             emit("stage", "Generating the Linux build in Podman...", None)
             _run(run + ["bash", "tools/linux/gen_helper.sh", "x86_64"],
