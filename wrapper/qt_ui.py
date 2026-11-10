@@ -3,14 +3,17 @@ import queue
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton,
     QVBoxLayout, QHBoxLayout, QGroupBox, QFileDialog, QProgressBar, QPlainTextEdit,
-    QMessageBox, QListWidget, QTabWidget)
+    QMessageBox, QListWidget, QListWidgetItem, QTabWidget, QComboBox, QCheckBox, QInputDialog)
 
-from .core import Pipeline, Cancelled, InstallError, valid_game
+from .core import (Pipeline, Cancelled, InstallError, valid_game, compiled_code,
+                   read_state, installed_runtime, reset_install)
 from .migration import legacy_folder
+from .i18n import LANGUAGES, get_language, set_language, tr, progress_text
+from .pr_build import open_prs
 
 
 class Window(QWidget):
@@ -20,79 +23,148 @@ class Window(QWidget):
         self.events = queue.Queue()
         self.cancel_event = threading.Event()
         self.running = False
-        self.autostart = autoplay and (valid_game(self.root / "root") or (self.root / "extracted").is_dir() or legacy_folder(self.root) is not None)
-        self.setWindowTitle("Savage Wind — Instalador")
-        self.resize(680, 510)
+        self.language = get_language(self.root)
+        self.local_labels = []
+        self.tab_labels = []
+        self.pr_entries = []
+        self.prs_changed = False
+        state = read_state(self.root)
+        self.current_custom = state.get("runtime_source") == "custom"
+        self.has_game = valid_game(self.root / "root")
+        self.old_game = valid_game(self.root / "extracted")
+        self.autostart = bool(autoplay and self.has_game and installed_runtime(self.root, state))
+        self.setWindowTitle(tr("Savage Wind — Installer", self.language))
+        self.resize(750, 680)
         layout = QVBoxLayout(self)
+        top = QHBoxLayout()
         heading = QLabel("Savage Wind")
         font = heading.font()
         font.setPointSize(font.pointSize() + 8)
         font.setBold(True)
         heading.setFont(font)
-        layout.addWidget(heading)
-        subtitle = QLabel("Instalação portátil · Savage Wind oficial")
+        top.addWidget(heading, 1)
+        lang_title = QLabel()
+        self.label(lang_title, "Language")
+        top.addWidget(lang_title)
+        self.language_box = QComboBox()
+        for code, name in LANGUAGES:
+            self.language_box.addItem(name, code)
+        index = self.language_box.findData(self.language)
+        self.language_box.setCurrentIndex(max(0, index))
+        self.language_box.currentIndexChanged.connect(self.language_changed)
+        top.addWidget(self.language_box)
+        layout.addLayout(top)
+        subtitle = QLabel()
+        self.label(subtitle, "Portable installer · Savage Wind Recomp")
         layout.addWidget(subtitle)
 
-
-        self.form = QGroupBox("Arquivos para instalação")
+        self.form = QGroupBox()
+        self.label(self.form, "Game files", "setTitle")
         fields = QVBoxLayout(self.form)
-        intro = QLabel("Escolha os arquivos extraídos ou importe pacotes NSP/XCI do seu jogo.")
+        intro = QLabel()
+        self.label(intro, "Choose extracted files or import your own NSP/XCI packages.")
         intro.setWordWrap(True)
         fields.addWidget(intro)
         self.tabs = QTabWidget()
         extracted_page = QWidget()
         extracted_fields = QVBoxLayout(extracted_page)
-        extracted_fields.addWidget(QLabel("Pasta contendo exefs/ e romfs/ já extraídos:"))
+        game_label = QLabel()
+        self.label(game_label, "Path containing exefs/ and romfs/:")
+        extracted_fields.addWidget(game_label)
         choose_row = QHBoxLayout()
         self.source = QLineEdit()
-        self.source.setPlaceholderText("Selecione a pasta com exefs/ e romfs/")
         choose_row.addWidget(self.source, 1)
-        choose = QPushButton("Procurar pasta...")
-        choose.clicked.connect(self.pick)
-        choose_row.addWidget(choose)
+        self.browse_source = QPushButton()
+        self.label(self.browse_source, "Browse...")
+        self.browse_source.clicked.connect(self.pick)
+        choose_row.addWidget(self.browse_source)
         extracted_fields.addLayout(choose_row)
-        self.tabs.addTab(extracted_page, "Pasta extraída")
+        self.tabs.addTab(extracted_page, "")
+        self.tab_labels.append((extracted_page, "Extracted folder"))
 
         packages_page = QWidget()
         packages_fields = QVBoxLayout(packages_page)
-        label = QLabel("Selecione seu jogo base NSP/XCI, atualização NSP e prod.keys.")
-        label.setWordWrap(True)
-        packages_fields.addWidget(label)
+        help_label = QLabel()
+        self.label(help_label, "Base NSP/XCI, update NSP and prod.keys from your own copy.")
+        help_label.setWordWrap(True)
+        packages_fields.addWidget(help_label)
         self.packages = {}
         for name, title, pattern in (
-                ("base", "Jogo base", "Pacotes Switch (*.nsp *.xci);;Todos (*)"),
-                ("update", "Atualização", "Pacotes NSP (*.nsp);;Todos (*)"),
-                ("keys", "Chaves", "prod.keys (*.keys);;Todos (*)")):
-            packages_fields.addWidget(QLabel(title))
+                ("base", "Base game", "Switch packages (*.nsp *.xci);;All files (*)"),
+                ("update", "Update", "NSP packages (*.nsp);;All files (*)"),
+                ("keys", "Keys", "prod.keys (*.keys);;All files (*)")):
+            title_label = QLabel()
+            self.label(title_label, title)
+            packages_fields.addWidget(title_label)
             row = QHBoxLayout()
             field = QLineEdit()
             row.addWidget(field, 1)
-            browse = QPushButton("Procurar...")
+            browse = QPushButton()
+            self.label(browse, "Browse...")
             browse.clicked.connect(lambda checked=False, f=field, t=title, p=pattern:
                                    self.pick_file(f, t, p))
             row.addWidget(browse)
             packages_fields.addLayout(row)
             self.packages[name] = field
-        self.tabs.addTab(packages_page, "NSP / XCI")
+        self.tabs.addTab(packages_page, "")
+        self.tab_labels.append((packages_page, "NSP / XCI"))
         fields.addWidget(self.tabs)
-        destination = QLabel(f"Destino: {self.root / 'root'}")
-        destination.setWordWrap(True)
-        fields.addWidget(destination)
-        note = QLabel("Saves, configurações e cache ficam em game/ junto ao AppImage. "
-                      "A importação pode exigir bastante espaço temporário.")
+        self.existing_label = QLabel()
+        self.existing_label.setWordWrap(True)
+        fields.addWidget(self.existing_label)
+        self.existing_label.setText(
+            tr("Native game library detected." if compiled_code(self.root)
+               else "No compiled game detected.", self.language) + " " +
+            tr("AppImage detected." if installed_runtime(self.root, state)
+               else "AppImage missing — setup required.", self.language))
+        note = QLabel()
+        self.label(note, "Saves, settings and caches are stored in game/ next to this launcher.")
         note.setWordWrap(True)
         fields.addWidget(note)
-        self.install = QPushButton("Instalar e jogar")
+
+        self.runtime_box = QGroupBox()
+        self.label(self.runtime_box, "Runtime source", "setTitle")
+        runtime_fields = QVBoxLayout(self.runtime_box)
+        self.custom = QCheckBox()
+        self.label(self.custom, "Build from selected pull requests", "setText")
+        self.custom.setChecked(self.current_custom)
+        runtime_fields.addWidget(self.custom)
+        self.pr_intro = QLabel()
+        self.label(self.pr_intro, "Choose one or more PRs; each contains third-party code and may conflict. Requires git and Podman.")
+        self.pr_intro.setWordWrap(True)
+        runtime_fields.addWidget(self.pr_intro)
+        self.pr_refresh = QPushButton()
+        self.label(self.pr_refresh, "Refresh pull requests")
+        self.pr_refresh.clicked.connect(self.fetch_prs)
+        runtime_fields.addWidget(self.pr_refresh)
+        self.pr_list = QListWidget()
+        self.pr_list.setWordWrap(True)
+        self.pr_list.setMinimumHeight(140)
+        runtime_fields.addWidget(self.pr_list)
+        self.custom.toggled.connect(self.custom_toggled)
+        self.custom_toggled(self.current_custom)
+        fields.addWidget(self.runtime_box)
+
+        actions = QHBoxLayout()
+        self.install = QPushButton()
+        self.label(self.install, "Install and play")
         self.install.clicked.connect(self.install_files)
-        fields.addWidget(self.install)
+        actions.addWidget(self.install)
+        self.delete_button = QPushButton()
+        self.label(self.delete_button, "Delete installation")
+        self.delete_button.clicked.connect(self.delete_installation)
+        actions.addWidget(self.delete_button)
+        fields.addLayout(actions)
         layout.addWidget(self.form)
 
-        self.progress_box = QGroupBox("Progresso")
+        self.progress_box = QGroupBox()
+        self.label(self.progress_box, "Progress", "setTitle")
         tasks = QVBoxLayout(self.progress_box)
-        self.stage = QLabel("Preparando...")
+        self.stage = QLabel()
+        self.label(self.stage, "Preparing...")
         self.stage.setWordWrap(True)
         tasks.addWidget(self.stage)
-        self.step_names = ["Armazenamento", "Arquivos do jogo", "Atualizações", "Recompilação", "Iniciar jogo"]
+        self.step_names = ["Storage", "Game files", "Updates", "Recompilation", "Launch game"]
         self.step_view = QListWidget()
         self.step_view.setFixedHeight(128)
         tasks.addWidget(self.step_view)
@@ -101,15 +173,18 @@ class Window(QWidget):
         self.bar.setRange(0, 0)
         tasks.addWidget(self.bar)
         buttons = QHBoxLayout()
-        self.toggle = QPushButton("Mostrar log")
+        self.toggle = QPushButton()
+        self.label(self.toggle, "Show log")
         self.toggle.clicked.connect(self.toggle_log)
         buttons.addWidget(self.toggle)
         buttons.addStretch(1)
-        self.back_button = QPushButton("Voltar")
+        self.back_button = QPushButton()
+        self.label(self.back_button, "Back")
         self.back_button.clicked.connect(self.back)
         self.back_button.hide()
         buttons.addWidget(self.back_button)
-        self.cancel_button = QPushButton("Cancelar")
+        self.cancel_button = QPushButton()
+        self.label(self.cancel_button, "Cancel")
         self.cancel_button.clicked.connect(self.abort)
         buttons.addWidget(self.cancel_button)
         tasks.addLayout(buttons)
@@ -125,13 +200,98 @@ class Window(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.pump)
         self.timer.start(75)
+        self.game_status()
         if self.autostart:
             self.form.hide()
             QTimer.singleShot(0, lambda: self.start(None))
 
+    def label(self, widget, message, setter="setText"):
+        self.local_labels.append((widget, message, setter))
+        getattr(widget, setter)(tr(message, self.language))
+
+    def language_changed(self):
+        self.language = self.language_box.currentData() or "en"
+        set_language(self.root, self.language)
+        self.setWindowTitle(tr("Savage Wind — Installer", self.language))
+        for widget, message, setter in self.local_labels:
+            getattr(widget, setter)(tr(message, self.language))
+        for page, message in self.tab_labels:
+            self.tabs.setTabText(self.tabs.indexOf(page), tr(message, self.language))
+        self.mark_step(getattr(self, "_step_current", -1))
+        self.game_status()
+
+    def custom_toggled(self, checked):
+        self.pr_intro.setVisible(checked)
+        self.pr_refresh.setVisible(checked)
+        self.pr_list.setVisible(checked)
+
+    def selected_prs(self):
+        return [item.data(Qt.ItemDataRole.UserRole)
+                for index in range(self.pr_list.count())
+                if (item := self.pr_list.item(index)).checkState() == Qt.CheckState.Checked]
+
+    def fetch_prs(self):
+        if self.running:
+            return
+        self.pr_refresh.setEnabled(False)
+        self.pr_refresh.setText(tr("Loading pull requests...", self.language))
+        def worker():
+            try:
+                self.events.put(("pr-list", open_prs()))
+            except Exception as error:
+                self.events.put(("pr-error", str(error)))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def game_status(self):
+        state = read_state(self.root)
+        existing = valid_game(self.root / "root") or valid_game(self.root / "extracted")
+        if existing:
+            where = self.root / ("root" if valid_game(self.root / "root") else "extracted")
+            self.source.setText(str(where))
+            self.source.setEnabled(False)
+            self.browse_source.setEnabled(False)
+            self.tabs.setTabEnabled(1, False)
+            self.install.setText(tr("Use existing game files", self.language))
+        else:
+            self.source.setEnabled(True)
+            self.browse_source.setEnabled(True)
+            self.tabs.setTabEnabled(1, True)
+            self.install.setText(tr("Install and play", self.language))
+        self.existing_label.setText(
+            tr("Native game library detected." if compiled_code(self.root)
+               else "No compiled game detected.", self.language) + " " +
+            tr("AppImage detected." if installed_runtime(self.root, state)
+               else "AppImage missing — setup required.", self.language))
+        self.delete_button.setEnabled(any((self.root / p).exists() for p in
+            ("root", "game", "extracted", "SavageWind-official.AppImage", "SavageWind-custom.AppImage")))
+
+    def delete_installation(self):
+        if self.running:
+            return
+        warning = tr("This permanently removes root/, game/, all saves, and downloaded/built AppImages. The portable launcher remains.", self.language)
+        reply = QMessageBox.warning(self, tr("Delete installation", self.language), warning,
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                    QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        typed, ok = QInputDialog.getText(self, tr("Delete installation", self.language),
+                                         tr("Type DELETE to confirm:", self.language))
+        if not ok:
+            return
+        try:
+            reset_install(self.root, typed)
+        except InstallError as error:
+            QMessageBox.critical(self, "Savage Wind", str(error))
+            return
+        self.source.clear()
+        for field in self.packages.values():
+            field.clear()
+        self.game_status()
+        QMessageBox.information(self, "Savage Wind", tr("Installation deleted.", self.language))
+
     def reveal(self, message):
         # The update probe runs without mapping the installer's native window.
-        self.stage.setText(message)
+        self.stage.setText(progress_text(message, self.language))
         self.form.hide()
         self.progress_box.show()
         if not self.isVisible():
@@ -139,9 +299,10 @@ class Window(QWidget):
             QApplication.instance().setQuitOnLastWindowClosed(True)
 
     def mark_step(self, stage):
+        self._step_current = stage
         for i, name in enumerate(self.step_names):
             mark = "✓" if i < stage else "▶" if i == stage else "○"
-            label = f"{mark}  {name}"
+            label = f"{mark}  {tr(name, self.language)}"
             if i >= self.step_view.count():
                 self.step_view.addItem(label)
             else:
@@ -149,11 +310,11 @@ class Window(QWidget):
 
     def phase(self, message):
         title = message.lower()
-        if any(x in title for x in ("recompil", "código nativo", "[gamebuild]", "linking")):
+        if any(x in title for x in ("recompil", "código nativo", "[gamebuild]", "linking", "compil", "native game code", "appimage")):
             return 3
-        if any(x in title for x in ("atualiza", "baixando", "versão", "oficial")):
+        if any(x in title for x in ("atualiza", "baixando", "versão", "oficial", "update", "download", "official")):
             return 2
-        if any(x in title for x in ("copiando", "arquivo", "analisando", "preparando exefs",
+        if any(x in title for x in ("copiando", "arquivo", "analisando", "copying", "game files", "preparing exefs",
                                      "importando", "pacotes", "romfs", "exefs", "chaves")):
             return 1
         if "iniciando o savage wind" in title:
@@ -173,17 +334,26 @@ class Window(QWidget):
             field.setText(picked)
 
     def install_files(self):
+        self.prs_changed = bool(self.custom.isChecked() and self.selected_prs())
+        if self.custom.isChecked() and not self.prs_changed and not self.current_custom:
+            QMessageBox.warning(self, "Savage Wind", tr("Select at least one pull request.", self.language))
+            return
+        if not self.custom.isChecked():
+            self.prs_changed = True
+        if valid_game(self.root / "root") or valid_game(self.root / "extracted"):
+            self.start("__reuse__")
+            return
         if self.tabs.currentIndex() == 0:
             folder = self.source.text().strip()
             if not folder:
-                QMessageBox.warning(self, "Selecione uma pasta", "Escolha uma pasta contendo exefs/ e romfs/.")
+                QMessageBox.warning(self, tr("Select a folder", self.language), tr("Please select a folder containing exefs/ and romfs/.", self.language))
                 return
             self.start(folder)
             return
         paths = {key: field.text().strip() for key, field in self.packages.items()}
         if any(not value or not Path(value).is_file() for value in paths.values()):
-            QMessageBox.warning(self, "Arquivos inválidos",
-                                "Selecione o NSP/XCI base, a atualização NSP e o arquivo prod.keys.")
+            QMessageBox.warning(self, tr("Invalid game files", self.language),
+                                tr("Please select valid base, update and prod.keys files.", self.language))
             return
         self.start(paths)
 
@@ -205,12 +375,12 @@ class Window(QWidget):
     def toggle_log(self):
         hidden = self.log.isHidden()
         self.log.setVisible(hidden)
-        self.toggle.setText("Ocultar log" if hidden else "Mostrar log")
+        self.toggle.setText(tr("Hide log" if hidden else "Show log", self.language))
 
     def abort(self):
         self.cancel_event.set()
         self.cancel_button.setEnabled(False)
-        self.stage.setText("Cancelando a operação...")
+        self.stage.setText(tr("Cancelling...", self.language))
 
     def back(self):
         if self.running:
@@ -230,7 +400,7 @@ class Window(QWidget):
         if self.running:
             return
         if source and not isinstance(source, dict) and not valid_game(source):
-            QMessageBox.warning(self, "Arquivos inválidos", "A pasta selecionada precisa conter exefs/main, exefs/main.npdm e romfs/.")
+            QMessageBox.warning(self, tr("Invalid game files", self.language), tr("Please select a folder containing exefs/ and romfs/.", self.language))
             return
         self.cancel_event = threading.Event()
         self.running = True
@@ -242,9 +412,9 @@ class Window(QWidget):
         self.log.clear()
         self.live_start = None
         self.log.hide()
-        self.toggle.setText("Mostrar log")
+        self.toggle.setText(tr("Show log", self.language))
         self.mark_step(-1)
-        self.stage.setText("Iniciando...")
+        self.stage.setText(tr("Starting...", self.language))
         def emit(kind, message, fraction):
             self.events.put(("event", kind, message, fraction))
         def ask(message):
@@ -257,7 +427,8 @@ class Window(QWidget):
             return bool(answer and answer[0])
         def work():
             try:
-                result = Pipeline(self.root, emit, ask, self.cancel_event).run(source)
+                prs = (self.selected_prs() if self.custom.isChecked() else []) if self.prs_changed else None
+                result = Pipeline(self.root, emit, ask, self.cancel_event, prs=prs).run(source)
                 self.events.put(("done", result))
             except Cancelled:
                 self.events.put(("done", "cancelled"))
@@ -281,7 +452,7 @@ class Window(QWidget):
                     continue
                 if kind == "live":
                     self.append_log(message, live=True)
-                    self.stage.setText(message.splitlines()[0])
+                    self.stage.setText(progress_text(message.splitlines()[0], self.language))
                 else:
                     self.stage.setText(message)
                 if kind == "stage":
@@ -298,12 +469,31 @@ class Window(QWidget):
                 _, message, answer, gate = event
                 # A modal question alone is shown; declining must not reveal the installer.
                 parent = self if self.isVisible() else None
-                response = QMessageBox.question(parent, "Atualização do Savage Wind", message,
+                response = QMessageBox.question(parent, "Savage Wind", progress_text(message, self.language),
                                                 QMessageBox.StandardButton.Yes |
                                                 QMessageBox.StandardButton.No,
                                                 QMessageBox.StandardButton.Yes)
                 answer.append(response == QMessageBox.StandardButton.Yes)
                 gate.set()
+            elif event[0] == "pr-list":
+                selected = {pr["number"] for pr in self.selected_prs()}
+                self.pr_list.clear()
+                self.pr_entries = event[1]
+                if not event[1]:
+                    self.pr_list.addItem(tr("No open pull requests targeting test.", self.language))
+                for pr in event[1]:
+                    item = QListWidgetItem(f"#{pr['number']} — {pr['title']}\n{pr['description']}")
+                    item.setData(Qt.ItemDataRole.UserRole, pr)
+                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                    item.setCheckState(Qt.CheckState.Checked if pr["number"] in selected else Qt.CheckState.Unchecked)
+                    item.setToolTip(pr["url"] + "\n" + pr["description"])
+                    self.pr_list.addItem(item)
+                self.pr_refresh.setEnabled(True)
+                self.pr_refresh.setText(tr("Refresh pull requests", self.language))
+            elif event[0] == "pr-error":
+                self.pr_refresh.setEnabled(True)
+                self.pr_refresh.setText(tr("Refresh pull requests", self.language))
+                QMessageBox.warning(self, "GitHub", event[1])
             elif event[0] == "done":
                 self.running = False
                 if event[1] == "launched":
@@ -311,20 +501,21 @@ class Window(QWidget):
                 elif event[1] == "setup":
                     self.progress_box.hide()
                     self.form.show()
+                    self.game_status()
                     if not self.isVisible():
                         self.show()
                         QApplication.instance().setQuitOnLastWindowClosed(True)
                 else:
-                    self.reveal("Operação cancelada.")
+                    self.reveal(tr("Operation cancelled.", self.language))
                     self.cancel_button.setEnabled(False)
                     self.back_button.show()
             elif event[0] == "error":
                 self.running = False
                 self.cancel_button.setEnabled(False)
-                self.stage.setText("Não foi possível concluir.")
+                self.stage.setText(tr("Could not finish.", self.language))
                 self.back_button.show()
                 self.append_log("ERRO: " + event[1])
-                self.reveal("Não foi possível concluir.")
+                self.reveal(tr("Could not finish.", self.language))
                 QMessageBox.critical(self, "Savage Wind", event[1])
 
 
