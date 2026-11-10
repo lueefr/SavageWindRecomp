@@ -360,6 +360,7 @@ class Window(QWidget):
     def mark_step(self, stage):
         self._step_current = stage
         names = self.source_steps if self._source_mode else self.step_names
+        self.step_view.setFixedHeight(158 if self._source_mode else 128)
         if self.step_view.count() != len(names):
             self.step_view.clear()
         for i, name in enumerate(names):
