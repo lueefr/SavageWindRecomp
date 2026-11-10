@@ -132,6 +132,10 @@ class InstallerFeatures(unittest.TestCase):
             self.assertTrue(any(x[:2] == ["git", "clone"] and "test" in x for x in calls))
             self.assertTrue(any(x[:2] == ["podman", "build"] for x in calls))
             self.assertTrue(any(x[:2] == ["podman", "run"] for x in calls))
+            for command in calls:
+                if command[:2] in (["podman", "build"], ["podman", "run"]):
+                    self.assertIn("--network=slirp4netns", command)
+                    self.assertNotIn("--network=host", command)
             self.assertFalse(any("refs/pull/" in " ".join(x) for x in calls))
             self.assertFalse(any(x[:2] == ["make", "appimage"] for x in calls))
             deps.assert_called_once()
