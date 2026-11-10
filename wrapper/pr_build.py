@@ -240,10 +240,13 @@ def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
             emit("log", f"Source revision: {commit}", None)
             emit("stage", "Preparing rootless Podman build container...", None)
             image = "localhost/savagewind-local-builder:current"
-            _run(["podman", "build", "--arch", "amd64", "-t", image,
+            # Use an explicit rootless network backend; the host's default pasta may fail
+            # before the Dockerfile runs. Never use --network=host for PR code.
+            emit("log", "Podman networking: slirp4netns (rootless, not host networking).", None)
+            _run(["podman", "build", "--network=slirp4netns", "--arch", "amd64", "-t", image,
                   "-f", "tools/linux/Containerfile", "tools/linux"],
                  source, emit, cancel, output)
-            run = ["podman", "run", "--rm", "--arch", "amd64",
+            run = ["podman", "run", "--rm", "--network=slirp4netns", "--arch", "amd64",
                    "--volume", f"{source}:/src:Z", "--workdir", "/src", image]
             emit("stage", "Generating the Linux build in Podman...", None)
             _run(run + ["bash", "tools/linux/gen_helper.sh", "x86_64"],
