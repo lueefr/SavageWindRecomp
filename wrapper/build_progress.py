@@ -27,8 +27,9 @@ class Snapshot:
 
 
 class BuildMonitor:
-    def __init__(self, root, started=None):
-        self.work = Path(root) / "root" / ".gamebuild"
+    def __init__(self, root, started=None, game_dir=None):
+        self.work = (Path(game_dir) if game_dir is not None
+                     else Path(root) / "root") / ".gamebuild"
         self.started = time.monotonic() if started is None else started
         self.best = 0.0
         self.samples = deque()
