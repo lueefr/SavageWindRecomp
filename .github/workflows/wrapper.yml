@@ -1,17 +1,62 @@
-name: Portable native launcher
+name: Portable AppImage releases
+
+# Only relevant portable-launcher or packaging changes on main can publish.
+# README, changelog, documentation, tests and unrelated upstream edits are ignored.
 on:
   push:
-    branches: [feat/portable-native-wrapper]
-  pull_request:
-    paths: ["wrapper/**", "tools/linux/build_wrapper.sh", "tools/linux/wrapper*", ".github/workflows/wrapper.yml"]
-  workflow_dispatch:
+    branches: [main]
+    paths:
+      - "wrapper/**"
+      - "!wrapper/tests/**"
+      - "!wrapper/**/*.md"
+      - "!wrapper/**/*.rst"
+      - "!wrapper/**/*.txt"
+      - "tools/linux/build_wrapper.sh"
+      - "tools/linux/wrapper_AppRun"
+      - "tools/linux/wrapper.desktop"
+      - "tools/linux/import_game.py"
+      - "tools/linux/nsp_vendor/**"
+      - "!tools/linux/nsp_vendor/**/*.md"
+      - "!tools/linux/nsp_vendor/**/README*"
+      - "!tools/linux/nsp_vendor/**/CHANGELOG*"
+      - "!tools/linux/nsp_vendor/**/LICENSE*"
+      - "tools/build_hactool.py"
+      - "tools/hactool/**"
+      - "!tools/hactool/**/*.md"
+      - "!tools/hactool/**/README*"
+      - "!tools/hactool/**/CHANGELOG*"
+      - "!tools/hactool/**/LICENSE*"
+      - "docs/icon/icon_1024.png"
+      - "tools/linux/portable_release.py"
+      - ".github/workflows/wrapper.yml"
+
 permissions:
   contents: read
+
+# Don't cancel a release midway through publishing when main receives a new push.
 concurrency:
-  group: portable-wrapper-${{ github.ref }}
-  cancel-in-progress: true
+  group: portable-appimage-main
+  cancel-in-progress: false
+
 jobs:
+  plan:
+    name: Verify wrapper changes and choose version
+    runs-on: ubuntu-24.04
+    outputs:
+      release: ${{ steps.version.outputs.release }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check actual changes since previous portable release
+        id: version
+        run: python3 tools/linux/portable_release.py plan --output "$GITHUB_OUTPUT"
+
   tests:
+    name: Portable wrapper tests
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -20,21 +65,26 @@ jobs:
           python-version: "3.12"
       - name: Syntax and unit tests
         run: |
-          python -m compileall -q wrapper
+          python -m compileall -q wrapper tools/linux/portable_release.py
           python -m unittest discover -s wrapper/tests -v
           python -m pip install cryptography==46.0.4
           PYTHONPATH=tools/linux python tools/linux/test_import_game.py
+          python tools/linux/test_portable_release.py
           sh -n tools/linux/wrapper_AppRun
           bash -n tools/linux/build_wrapper.sh
+
   appimage:
-    needs: tests
-    if: github.event_name != 'pull_request'
+    name: Build and publish versioned AppImage
+    needs: [plan, tests]
+    if: needs.plan.outputs.release == 'true'
     permissions:
       contents: write
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -52,8 +102,9 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: bash tools/linux/build_wrapper.sh x86_64
-      - name: Check portable AppImage layout
+      - name: Verify portable AppImage layout
         run: |
+          set -euo pipefail
           cd build/dist
           chmod +x SavageWind-Portable-x86_64.AppImage
           ./SavageWind-Portable-x86_64.AppImage --appimage-extract >/dev/null
@@ -70,26 +121,28 @@ jobs:
           test -f squashfs-root/usr/share/wrapper/rollback.py
           test -f squashfs-root/usr/share/wrapper/migration.py
           LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib" squashfs-root/usr/bin/hactool 2>&1 | head -10 || true
-      - name: Publish directly downloadable portable preview
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/portable-native-wrapper'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          tag=portable-preview
-          asset=build/dist/SavageWind-Portable-x86_64.AppImage
-          printf '## Savage Wind Portable (Linux)\n\n' > /tmp/portable-notes.md
-          printf 'Native Qt/GTK portable wrapper. Build from commit %s.\n\n' "$GITHUB_SHA" >> /tmp/portable-notes.md
-          printf 'Bundled NSP/XCI importer; no game, keys or official game binary included.\n' >> /tmp/portable-notes.md
-          printf 'SHA-256: %s\n' "$(sha256sum "$asset" | cut -d' ' -f1)" >> /tmp/portable-notes.md
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$asset" --clobber
-            gh release edit "$tag" --title "Savage Wind Portable (Linux preview)" --notes-file /tmp/portable-notes.md --prerelease
-          else
-            gh release create "$tag" "$asset" --target "$GITHUB_SHA" --title "Savage Wind Portable (Linux preview)" --notes-file /tmp/portable-notes.md --prerelease
-          fi
-      - uses: actions/upload-artifact@v4
+      - name: Save CI build artifact
+        uses: actions/upload-artifact@v4
         with:
           name: SavageWind-Portable-x86_64
           path: build/dist/SavageWind-Portable-x86_64.AppImage
           if-no-files-found: error
+      - name: Publish immutable versioned release with wrapper changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          asset=build/dist/SavageWind-Portable-x86_64.AppImage
+          test -s "$asset"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists; refusing to overwrite published assets."
+            exit 1
+          fi
+          sha256sum "$asset" > "$asset.sha256"
+          python3 tools/linux/portable_release.py notes --image "$asset" --output build/dist/RELEASE_NOTES.md
+          gh release create "$TAG" "$asset" "$asset.sha256" \
+            --target "$GITHUB_SHA" \
+            --title "Savage Wind Portable ${TAG#portable-}" \
+            --notes-file build/dist/RELEASE_NOTES.md \
+            --latest
