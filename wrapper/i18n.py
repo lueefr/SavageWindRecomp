@@ -43,7 +43,7 @@ CATALOG = {
     "Pull requests": ("Pull requests", "Пул-реквесты", "拉取请求"),
     "Open pull requests": ("Pull requests abertos", "Открытые PR", "开放的拉取请求"),
     "Refresh pull requests": ("Atualizar pull requests", "Обновить PR", "刷新拉取请求"),
-    "Choose one or more PRs; each contains third-party code and may conflict. Requires git and Podman.": ("Escolha um ou mais PRs; eles podem ter código de terceiros e entrar em conflito. Requer git e Podman.", "Выберите один или несколько PR; они могут конфликтовать и содержат сторонний код. Требуются git и Podman.", "选择一个或多个 PR；可能包含第三方代码并产生冲突。需要 git 和 Podman。"),
+    "Select PRs to merge with upstream test. The build tools are included in this AppImage.": ("Selecione PRs para combinar com test. O AppImage já inclui as ferramentas de compilação.", "Выберите PR для объединения с test. Инструменты сборки уже включены в AppImage.", "选择要合并到 test 的 PR。编译工具已包含在 AppImage 中。"),
     "Loading pull requests...": ("Carregando pull requests...", "Загрузка PR...", "正在加载拉取请求..."),
     "No open pull requests targeting test.": ("Nenhum PR aberto para test.", "Нет открытых PR для test.", "没有针对 test 的开放 PR。"),
     "Select at least one pull request.": ("Selecione pelo menos um pull request.", "Выберите хотя бы один PR.", "请至少选择一个拉取请求。"),
