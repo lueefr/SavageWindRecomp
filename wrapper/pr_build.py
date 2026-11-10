@@ -341,6 +341,24 @@ def build_pr_appimage(root, prs, emit, cancel, ask=None):
     return build_upstream_appimage(root, emit, cancel, ask=ask, prs=validated(prs))
 
 
+def upstream_test_head():
+    """Read the latest upstream test SHA without fetching or compiling sources."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--heads", UPSTREAM, "test"],
+            env=host_environment(), capture_output=True, text=True,
+            timeout=25, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise InstallError(f"Cannot check upstream test revision: {error}") from error
+    if result.returncode:
+        raise InstallError("Cannot check upstream test revision: " +
+                           result.stderr.strip()[-450:])
+    parts = result.stdout.strip().split()
+    if len(parts) != 2 or parts[1] != "refs/heads/test" or not SHA.fullmatch(parts[0]):
+        raise InstallError("Upstream test revision could not be verified.")
+    return parts[0]
+
+
 def build_test_appimage(root, emit, cancel, ask=None):
     """Compile upstream test without merging any PRs."""
     return build_upstream_appimage(root, emit, cancel, ask=ask)
