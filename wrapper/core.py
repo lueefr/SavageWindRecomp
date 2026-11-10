@@ -236,6 +236,46 @@ def local_release(root, state):
     return path
 
 
+def installed_runtime(root, state):
+    """Check the selected AppImage; a missing executable always requires setup."""
+    if state.get("runtime_source") == "custom":
+        from .pr_build import custom_runtime
+        return custom_runtime(root, state)
+    return local_release(root, state)
+
+
+def reset_install(root, confirmation):
+    """Erase only the installed game and runtimes after typed confirmation."""
+    if confirmation != "DELETE":
+        raise InstallError("Type DELETE to confirm deletion, including all saves.")
+    root = Path(root).resolve()
+    if root in (Path("/"), Path.home()):
+        raise InstallError("Refusing to delete an unsafe directory.")
+    metadata = root / ".sw-wrapper"
+    if metadata.is_symlink():
+        raise InstallError("Installer metadata is a symbolic link.")
+    metadata.mkdir(exist_ok=True)
+    with (metadata / "operation.lock").open("a+b") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise InstallError("Close the game and other installers first.") from error
+        targets = [root / name for name in (
+            "root", "game", "extracted", "SavageWind-official.AppImage",
+            "SavageWind-custom.AppImage")]
+        targets += [metadata / name for name in ("state.json", "rollback")]
+        for target in targets:
+            if target.is_symlink():
+                raise InstallError(f"Refusing to delete a symlink: {target}")
+            if target.exists() and not (target.is_file() or target.is_dir()):
+                raise InstallError(f"Unexpected installation file: {target}")
+        for target in targets:
+            if target.is_dir():
+                shutil.rmtree(target)
+            elif target.exists():
+                target.unlink()
+
+
 def check_cancel(cancel):
     if cancel.is_set():
         raise Cancelled("Operação cancelada.")
@@ -790,9 +830,10 @@ def import_packages(root, paths, emit, cancel):
 
 
 class Pipeline:
-    def __init__(self, root, emit, ask, cancel):
+    def __init__(self, root, emit, ask, cancel, prs=None):
         self.root = Path(root).resolve()
         self.emit, self.ask, self.cancel = emit, ask, cancel
+        self.prs = prs  # None: preserve runtime; []: official; list: custom PR build
         self._last_progress = 0.0
         self._last_log = 0.0
 
@@ -830,6 +871,9 @@ class Pipeline:
             return self._run_locked(source)
 
     def _run_locked(self, source=None):
+        from_setup = source == "__reuse__"
+        if from_setup:
+            source = None
         root = self.root
         fd, temp = tempfile.mkstemp(prefix=".write-", dir=root)
         os.close(fd)
@@ -871,37 +915,65 @@ class Pipeline:
             raise InstallError("O jogo já está instalado nesta pasta. Seus arquivos não serão substituídos.")
         if not valid_game(game_files(root)) and not source:
             return "setup"
+        if not from_setup and source is None and installed_runtime(root, state) is None:
+            return "setup"
         # Check availability before copying many GiB of game files.
         if source and game_files(root).exists() and not valid_game(game_files(root)):
             raise InstallError("A pasta root/ já existe, mas está incompleta. Não será sobrescrita.")
-        self.status("stage", "Procurando atualizações oficiais...")
-        installed = local_release(root, state)
-        release_error = None
-        try:
-            remote = fetch_latest()
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError, InstallError) as error:
-            remote = None
-            release_error = str(error)
-            self.status("log", f"Atualização indisponível: {error}")
+        # PRs are only built by explicit selection in the installer.
         rollback = None
-        if remote and (not installed or state.get("official_digest") != remote["digest"]):
-            if not installed or self.ask(f"Há uma atualização do Savage Wind ({remote['tag']}).\nDeseja instalá-la?"):
-                self.status("reveal", f"Instalando Savage Wind {remote['tag']}...")
-                if installed:
-                    rollback = Rollback(root)
-                    self.status("stage", "Protegendo a versão atual antes de atualizar...")
-                    rollback.begin(dict(state))
-                try:
-                    installed = (adopt_release(remote, root, self.status, self.cancel)
-                                 or download_release(remote, root, self.status, self.cancel))
-                    stat = installed.stat()
-                    state.update({"official_digest": remote["digest"], "official_tag": remote["tag"],
-                                  "official_size": stat.st_size, "official_mtime_ns": stat.st_mtime_ns})
-                    write_state(root, state)
-                except BaseException:
-                    if rollback:
-                        rollback.restore()
-                    raise
+        custom = state.get("runtime_source") == "custom" if self.prs is None else bool(self.prs)
+        installed = installed_runtime(root, state) if self.prs is None else None
+        release_error = None
+        if custom:
+            from .pr_build import build_pr_appimage, custom_runtime, selection_key
+            desired = selection_key(self.prs) if self.prs else state.get("custom_selection")
+            installed = custom_runtime(root, state)
+            if self.prs and (not installed or state.get("custom_selection") != desired):
+                if not self.ask("Selected PRs contain unreviewed third-party code. "
+                                "Building and running them may execute arbitrary code. "
+                                "Continue only if you trust every author. Continue?"):
+                    return "setup"
+                result = build_pr_appimage(root, self.prs, self.status, self.cancel)
+                installed = result["path"]
+                state.update({
+                    "runtime_source": "custom", "custom_digest": result["digest"],
+                    "custom_selection": result["selection"], "custom_size": result["size"],
+                    "custom_mtime_ns": result["mtime_ns"],
+                })
+                write_state(root, state)
+            if not installed:
+                return "setup"
+        else:
+            if self.prs is not None:
+                state["runtime_source"] = "official"
+                write_state(root, state)
+            self.status("stage", "Checking official releases...")
+            installed = local_release(root, state)
+            try:
+                remote = fetch_latest()
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError, InstallError) as error:
+                remote = None
+                release_error = str(error)
+                self.status("log", f"Update unavailable: {error}")
+            if remote and (not installed or state.get("official_digest") != remote["digest"]):
+                if not installed or self.ask(f"Savage Wind {remote['tag']} is available. Install it?"):
+                    self.status("reveal", f"Installing Savage Wind {remote['tag']}...")
+                    if installed:
+                        rollback = Rollback(root)
+                        self.status("stage", "Backing up the current version...")
+                        rollback.begin(dict(state))
+                    try:
+                        installed = (adopt_release(remote, root, self.status, self.cancel)
+                                     or download_release(remote, root, self.status, self.cancel))
+                        stat = installed.stat()
+                        state.update({"official_digest": remote["digest"], "official_tag": remote["tag"],
+                                      "official_size": stat.st_size, "official_mtime_ns": stat.st_mtime_ns})
+                        write_state(root, state)
+                    except BaseException:
+                        if rollback:
+                            rollback.restore()
+                        raise
         try:
             if not installed:
                 if release_error:
@@ -920,17 +992,19 @@ class Pipeline:
                 else:
                     return "setup"
             # A rebuild is mandatory only after changing the executable or importing new game files.
-            recover_completed_code(root, installed, state, self.status)
+            if not custom:
+                recover_completed_code(root, installed, state, self.status)
+            active_digest = state.get("custom_digest") if custom else state.get("official_digest")
             key = state.get("built_digest")
             target = cpu_target()
             cpu_changed = bool(state.get("built_cpu") and state["built_cpu"] != target)
-            if (key != state.get("official_digest") or cpu_changed or
+            if (key != active_digest or cpu_changed or
                     not compiled_code(root)):
                 self.status("reveal", "Preparando o código nativo do jogo...")
                 if cpu_changed:
                     self.status("stage", "CPU diferente detectada; preparando código nativo compatível...")
                 build_game(root, installed, self.status, self.cancel)
-                state["built_digest"] = state.get("official_digest")
+                state["built_digest"] = active_digest
                 state["built_cpu"] = target
                 write_state(root, state)
             elif not state.get("built_cpu"):
