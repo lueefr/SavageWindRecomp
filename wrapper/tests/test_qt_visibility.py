@@ -97,6 +97,40 @@ class HiddenLauncherTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_test_branch_option_is_exclusive_with_pull_requests(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            window = qt_ui.Window(root, autoplay=False)
+            try:
+                window.custom.setChecked(True)
+                self.assertFalse(window.test_branch.isChecked())
+                window.test_branch.setChecked(True)
+                self.assertTrue(window.test_branch.isChecked())
+                self.assertFalse(window.custom.isChecked())
+                self.assertFalse(window.pr_list.isVisible())
+                self.assertEqual(window.tabs.tabText(2), "Compilações locais" if window.language == "pt-BR" else "Source builds")
+                with mock.patch.object(window, "start") as start:
+                    window.source.setText("")
+                    window.install_files()
+                # With no game files, a source folder is still required.
+                start.assert_not_called()
+            finally:
+                window.close()
+
+    def test_test_branch_uses_existing_game_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.installed(root)
+            window = qt_ui.Window(root, autoplay=False)
+            try:
+                window.test_branch.setChecked(True)
+                self.assertFalse(window.custom.isChecked())
+                with mock.patch.object(window, "start") as start:
+                    window.install_files()
+                start.assert_called_once_with("__reuse__")
+            finally:
+                window.close()
+
     def test_gui_language_defaults_to_english_and_persists(self):
         from wrapper.i18n import get_language
         with tempfile.TemporaryDirectory() as folder:
