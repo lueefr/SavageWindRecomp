@@ -96,6 +96,20 @@ def custom_runtime(root, state):
     return path
 
 
+def test_runtime(root, state):
+    """Locate a previously built upstream test AppImage without network access."""
+    root = Path(root)
+    path = root / "SavageWind-test.AppImage"
+    if (path.is_symlink() or not path.is_file() or
+            state.get("runtime_source") != "test" or
+            not state.get("test_digest") or not state.get("test_commit")):
+        return None
+    stat = path.stat()
+    if stat.st_size != state.get("test_size") or stat.st_mtime_ns != state.get("test_mtime_ns"):
+        return None
+    return path
+
+
 def _run(argv, cwd, emit, cancel, logfile):
     check_cancel(cancel)
     emit("stage", "Running: " + " ".join(argv[:4]) + "...", None)
@@ -141,25 +155,38 @@ def _run(argv, cwd, emit, cancel, logfile):
 
 
 def build_pr_appimage(root, prs, emit, cancel):
-    """Merge pinned PR heads onto upstream test in order; build without game data."""
+    """Build selected PRs on top of upstream test."""
+    return build_upstream_appimage(root, emit, cancel, prs=validated(prs))
+
+
+def build_test_appimage(root, emit, cancel):
+    """Build upstream test without applying any PR."""
+    return build_upstream_appimage(root, emit, cancel)
+
+
+def build_upstream_appimage(root, emit, cancel, prs=None):
+    """Build an upstream test checkout, optionally merging pinned PRs."""
     root = Path(root).resolve()
-    prs = validated(prs)
+    mode = "test" if prs is None else "pr"
+    if prs is not None:
+        prs = validated(prs)
     if shutil.which("git") is None or shutil.which("podman") is None:
-        raise InstallError("Local PR builds require git and rootless Podman installed on the host.")
+        raise InstallError("Local source builds require git and rootless Podman installed on the host.")
     work = root / ".sw-wrapper"
     if work.is_symlink():
         raise InstallError("Installer working directory cannot be a symlink.")
     work.mkdir(exist_ok=True)
-    stage = Path(tempfile.mkdtemp(prefix="pr-build-", dir=work))
-    log = work / "pr-build.log"
+    stage = Path(tempfile.mkdtemp(prefix=f"{mode}-build-", dir=work))
+    log = work / f"{mode}-build.log"
     try:
         with log.open("w", encoding="utf-8") as output:
             source = stage / "source"
-            emit("reveal", "Building a custom AppImage from selected PRs...", None)
+            emit("reveal", "Building upstream test AppImage..." if prs is None
+                 else "Building a custom AppImage from selected PRs...", None)
             _run(["git", "clone", "--no-tags", "--single-branch", "--branch", "test",
                   UPSTREAM, str(source)], stage, emit, cancel, output)
             # A merge commit needs an identity; no global Git configuration is changed.
-            for pr in prs:
+            for pr in prs or []:
                 check_cancel(cancel)
                 number = pr["number"]
                 emit("stage", f"Applying PR #{number}...", None)
@@ -172,7 +199,12 @@ def build_pr_appimage(root, prs, emit, cancel):
                 _run(["git", "-c", "user.name=Savage Wind Portable",
                       "-c", "user.email=portable@localhost", "merge", "--no-edit",
                       "--no-ff", actual], source, emit, cancel, output)
-            # Run all PR-controlled build scripts inside a rootless container.
+            commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source,
+                                    check=True, capture_output=True, text=True).stdout.strip()
+            if not SHA.fullmatch(commit):
+                raise InstallError("Git returned an invalid source commit ID.")
+            emit("log", f"Source revision: {commit}", None)
+            # Run source-controlled build scripts inside a rootless container.
             # Never execute the PR's Makefile or appimage.sh directly on the host.
             emit("stage", "Compiling the custom AppImage in an isolated Podman container...", None)
             image = "localhost/savagewind-pr-build:amd64"
@@ -190,9 +222,9 @@ def build_pr_appimage(root, prs, emit, cancel):
                 if stream.read(4) != b"\x7fELF":
                     raise InstallError("The generated AppImage is not an ELF executable.")
             check_cancel(cancel)
-            dest = root / "SavageWind-custom.AppImage"
+            dest = root / ("SavageWind-test.AppImage" if prs is None else "SavageWind-custom.AppImage")
             if dest.is_symlink():
-                raise InstallError("The custom AppImage destination is a symlink.")
+                raise InstallError("The build output destination is a symlink.")
             fd, temp = tempfile.mkstemp(prefix=".custom-", dir=root)
             try:
                 with os.fdopen(fd, "wb") as target, results[0].open("rb") as source_file:
@@ -207,9 +239,11 @@ def build_pr_appimage(root, prs, emit, cancel):
                 if os.path.exists(temp):
                     os.unlink(temp)
             stat = dest.stat()
-            emit("progress", "Custom AppImage built successfully.", 100)
+            emit("progress", "Upstream test AppImage built successfully." if prs is None
+                 else "Custom AppImage built successfully.", 100)
             return {"path": dest, "digest": digest, "size": stat.st_size,
-                    "mtime_ns": stat.st_mtime_ns, "selection": selection_key(prs)}
+                    "mtime_ns": stat.st_mtime_ns, "commit": commit,
+                    "selection": f"test:{commit}" if prs is None else selection_key(prs)}
     finally:
         # Only this uniquely-created directory is removed. Never delete root/game/saves.
         shutil.rmtree(stage)
