@@ -83,6 +83,55 @@ class Dependencies(unittest.TestCase):
                 self.assertIn("Arch Linux", asked[0])
                 self.assertIn("yay -S --needed git podman", asked[0])
 
+    def test_approved_install_runs_terminal_and_resumes(self):
+        import shlex
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            plan = {"distro": "Arch Linux", "manager": "yay",
+                    "packages": ["git", "podman"],
+                    "commands": [["yay", "-S", "--needed", "git", "podman"]]}
+            commands = []
+            def choose_terminal(script):
+                commands.append(script)
+                return ["fake-terminal", script]
+            def fake_process(argv, **kwargs):
+                import re
+                match = re.search(r'printf .*\$result" > (.*)', argv[-1])
+                self.assertIsNotNone(match)
+                path = Path(shlex.split(match.group(1))[0])
+                path.write_text("0\n", encoding="utf-8")
+                return mock.Mock(poll=lambda: None)
+            with mock.patch.object(deps, "install_plan", return_value=plan):
+                with mock.patch.object(deps, "terminal_command", side_effect=choose_terminal):
+                    with mock.patch.object(deps.subprocess, "Popen", side_effect=fake_process):
+                        with mock.patch.object(deps, "missing_tools", side_effect=[["git", "podman"], []]):
+                            messages = []
+                            deps.ensure_tools(root, lambda *args: messages.append(args),
+                                              lambda _: True, threading.Event())
+            self.assertEqual(len(commands), 1)
+            self.assertIn("yay -S --needed git podman", commands[0])
+            self.assertTrue(any("installed successfully" in msg[1] for msg in messages))
+
+    def test_package_failure_stops_before_source_build(self):
+        import shlex
+        with tempfile.TemporaryDirectory() as folder:
+            plan = {"distro": "Arch Linux", "manager": "yay",
+                    "packages": ["git", "podman"],
+                    "commands": [["yay", "-S", "--needed", "git", "podman"]]}
+            def fake_process(argv, **kwargs):
+                import re
+                match = re.search(r'printf .*\$result" > (.*)', argv[-1])
+                Path(shlex.split(match.group(1))[0]).write_text("1\n")
+                return mock.Mock(poll=lambda: None)
+            with mock.patch.object(deps, "install_plan", return_value=plan):
+                with mock.patch.object(deps, "terminal_command",
+                                       side_effect=lambda script: ["console", script]):
+                    with mock.patch.object(deps.subprocess, "Popen", side_effect=fake_process):
+                        with mock.patch.object(deps, "missing_tools", return_value=["git", "podman"]):
+                            with self.assertRaisesRegex(InstallError, "package manager failed"):
+                                deps.ensure_tools(folder, lambda *_: None, lambda _: True,
+                                                  threading.Event())
+
     def test_terminal_for_arch_kde(self):
         cmd = deps.terminal_command("echo success", which=available("konsole"))
         self.assertEqual(cmd[:3], ["/usr/bin/konsole", "--noclose", "-e"])
