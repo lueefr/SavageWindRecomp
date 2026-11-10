@@ -80,7 +80,7 @@ class Window(Gtk.Window):
         self.browse_source.connect("clicked", self.pick)
         row.pack_start(self.browse_source, False, False, 0)
         extracted_page.pack_start(row, False, False, 0)
-        self.tabs.append_page(extracted_page, Gtk.Label())
+        self.tabs.append_page(extracted_page, Gtk.Label(label=tr("Extracted folder", self.language)))
         self.tab_labels.append((extracted_page, "Extracted folder"))
 
         packages_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -104,7 +104,7 @@ class Window(Gtk.Window):
             pkg_row.pack_start(browse, False, False, 0)
             packages_page.pack_start(pkg_row, False, False, 0)
             self.packages[name] = field
-        self.tabs.append_page(packages_page, Gtk.Label())
+        self.tabs.append_page(packages_page, Gtk.Label(label=tr("NSP / XCI", self.language)))
         self.tab_labels.append((packages_page, "NSP / XCI"))
         self.tabs.connect("switch-page", self.remember_source_tab)
         self.form.pack_start(self.tabs, False, False, 0)
@@ -157,7 +157,7 @@ class Window(Gtk.Window):
         self.pr_list = Gtk.ListBox()
         self.pr_scroll.add(self.pr_list)
         runtime_box.pack_start(self.pr_scroll, False, False, 0)
-        self.tabs.append_page(runtime_box, Gtk.Label())
+        self.tabs.append_page(runtime_box, Gtk.Label(label=tr("Source builds", self.language)))
         self.tab_labels.append((runtime_box, "Source builds"))
         actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.install_button = Gtk.Button()
