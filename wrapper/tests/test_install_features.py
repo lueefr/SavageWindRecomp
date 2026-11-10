@@ -148,11 +148,51 @@ class InstallerFeatures(unittest.TestCase):
                 if command[:2] == ["podman", "run"]:
                     self.assertIn("--network=pasta", command)
                     self.assertNotIn("--network=host", command)
+                    if "--volume" in command:
+                        self.assertIn("--userns=keep-id", command)
+                        self.assertIn("HOME=/tmp", command)
+                    else:
+                        self.assertNotIn("--userns=keep-id", command)
             self.assertFalse(any("refs/pull/" in " ".join(x) for x in calls))
             self.assertFalse(any(x[:2] == ["make", "appimage"] for x in calls))
             deps.assert_called_once()
             ready.assert_called_once()
             tun.assert_called_once()
+
+    def test_cleanup_permission_error_uses_rootless_namespace_only(self):
+        with tempfile.TemporaryDirectory() as folder:
+            stage = Path(folder) / "test-build-safe"
+            stage.mkdir()
+            (stage / "source").mkdir()
+            events = []
+            def remove(argv, **kwargs):
+                self.assertEqual(argv[:5],
+                                 ["podman", "unshare", "rm", "-rf", "--"])
+                self.assertEqual(argv[5], str(stage))
+                self.assertNotIn("sudo", argv)
+                (stage / "source").rmdir()
+                stage.rmdir()
+                return mock.Mock(returncode=0, stderr="")
+            with mock.patch.object(pr_build.shutil, "rmtree",
+                                   side_effect=PermissionError(13, "Permission denied", "build/zig")):
+                with mock.patch.object(pr_build.subprocess, "run", side_effect=remove):
+                    pr_build._cleanup_stage(stage, lambda *args: events.append(args))
+            self.assertFalse(stage.exists())
+            self.assertTrue(any("cleaned through rootless Podman" in x[1] for x in events))
+
+    def test_cleanup_fails_without_replacing_build_result(self):
+        with tempfile.TemporaryDirectory() as folder:
+            stage = Path(folder) / "test-build-leftover"
+            stage.mkdir()
+            events = []
+            with mock.patch.object(pr_build.shutil, "rmtree",
+                                   side_effect=PermissionError(13, "Permission denied", "build/zig")):
+                with mock.patch.object(pr_build.subprocess, "run",
+                                       return_value=mock.Mock(returncode=1,
+                                                              stderr="permission denied")):
+                    pr_build._cleanup_stage(stage, lambda *args: events.append(args))
+            self.assertTrue(stage.exists())
+            self.assertTrue(any("Temporary checkout was retained" in x[1] for x in events))
 
     def test_toolchain_recipe_with_comments_and_continuations(self):
         with tempfile.TemporaryDirectory() as folder:
