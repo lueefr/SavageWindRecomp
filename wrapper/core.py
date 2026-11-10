@@ -1179,6 +1179,7 @@ class Pipeline:
                                 "The new AppImage may require a matching library; the upstream "
                                 "loader will check compatibility.")
                 return self.launch_existing(root, installed)
+            self.status("native-start", "Recompiling native game code...", None)
             self.status("reveal", "Recompiling game code at your request...")
             build_game(root, installed, self.status, self.cancel)
             active = (state.get("test_digest") if state.get("runtime_source") == "test" else
