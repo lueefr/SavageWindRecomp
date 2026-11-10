@@ -49,10 +49,14 @@ docker rm -f "$container" >/dev/null
 trap - EXIT
 
 # Keep the guest runtime's shared libraries but omit documentation and package-manager caches.
-rm -rf "$OUTPUT/rootfs/usr/share/doc" "$OUTPUT/rootfs/usr/share/man" \
-       "$OUTPUT/rootfs/usr/share/info" "$OUTPUT/rootfs/usr/share/locale" \
-       "$OUTPUT/rootfs/var/cache/apt" "$OUTPUT/rootfs/var/lib/apt/lists" \
-       "$OUTPUT/rootfs/usr/share/icons" "$OUTPUT/rootfs/usr/share/backgrounds"
+# Keep package copyright notices for all redistributed system components.
+if [ -d "$OUTPUT/rootfs/usr/share/doc" ]; then
+    find "$OUTPUT/rootfs/usr/share/doc" -type f ! -name copyright ! -name LICENSE -delete
+fi
+rm -rf "$OUTPUT/rootfs/usr/share/man" "$OUTPUT/rootfs/usr/share/info" \
+       "$OUTPUT/rootfs/usr/share/locale" "$OUTPUT/rootfs/var/cache/apt" \
+       "$OUTPUT/rootfs/var/lib/apt/lists" "$OUTPUT/rootfs/usr/share/icons" \
+       "$OUTPUT/rootfs/usr/share/backgrounds"
 cp "$OUTPUT/rootfs/usr/bin/bwrap" "$OUTPUT/bwrap"
 
 # Bundle bwrap's host-side libraries instead of asking players to install packages.
