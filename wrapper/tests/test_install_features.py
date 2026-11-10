@@ -127,14 +127,15 @@ class InstallerFeatures(unittest.TestCase):
                         b"\x7fELF" + b"x" * 1_100_000)
             with mock.patch.object(pr_build, "ensure_tools") as deps:
                 with mock.patch.object(pr_build, "_podman_ready") as ready:
-                    with mock.patch.object(pr_build, "_image_exists", return_value=False):
-                        with mock.patch.object(pr_build.subprocess, "run",
-                                               return_value=mock.Mock(returncode=0)):
-                            with mock.patch.object(pr_build, "_run", side_effect=fake_run):
-                                with mock.patch.object(pr_build, "_capture", return_value=revision):
-                                    result = pr_build.build_test_appimage(
-                                        root, lambda *_: None, threading.Event(),
-                                        ask=lambda _: True)
+                    with mock.patch.object(pr_build, "ensure_tun") as tun:
+                        with mock.patch.object(pr_build, "_image_exists", return_value=False):
+                            with mock.patch.object(pr_build.subprocess, "run",
+                                                   return_value=mock.Mock(returncode=0)):
+                                with mock.patch.object(pr_build, "_run", side_effect=fake_run):
+                                    with mock.patch.object(pr_build, "_capture", return_value=revision):
+                                        result = pr_build.build_test_appimage(
+                                            root, lambda *_: None, threading.Event(),
+                                            ask=lambda _: True)
             self.assertEqual(result["path"], root / "SavageWind-test.AppImage")
             self.assertEqual(result["commit"], revision)
             self.assertEqual(result["selection"], "test:" + revision)
@@ -145,12 +146,13 @@ class InstallerFeatures(unittest.TestCase):
             self.assertEqual(sum(x[:2] == ["podman", "run"] for x in calls), 3)
             for command in calls:
                 if command[:2] == ["podman", "run"]:
-                    self.assertIn("--network=slirp4netns", command)
+                    self.assertIn("--network=pasta", command)
                     self.assertNotIn("--network=host", command)
             self.assertFalse(any("refs/pull/" in " ".join(x) for x in calls))
             self.assertFalse(any(x[:2] == ["make", "appimage"] for x in calls))
             deps.assert_called_once()
             ready.assert_called_once()
+            tun.assert_called_once()
 
     def test_toolchain_recipe_with_comments_and_continuations(self):
         with tempfile.TemporaryDirectory() as folder:
