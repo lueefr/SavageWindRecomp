@@ -28,7 +28,7 @@ class Dependencies(unittest.TestCase):
             {"family": "arch", "name": "Arch Linux"},
             which=available("yay", "pacman", "sudo"), geteuid=lambda: 1000)
         self.assertEqual(plan["manager"], "yay")
-        self.assertEqual(plan["commands"], [["yay", "-S", "--needed", "git", "podman"]])
+        self.assertEqual(plan["commands"], [["yay", "-S", "--needed", "git", "podman", "slirp4netns"]])
         self.assertNotIn("sudo", deps.command_preview(plan))
 
     def test_arch_falls_back_to_pacman(self):
@@ -36,13 +36,21 @@ class Dependencies(unittest.TestCase):
             {"family": "arch", "name": "Arch Linux"},
             which=available("pacman", "sudo"), geteuid=lambda: 1000)
         self.assertEqual(plan["commands"], [["sudo", "pacman", "-S", "--needed",
-                                               "git", "podman"]])
+                                               "git", "podman", "slirp4netns"]])
+
+    def test_podman_already_installed_still_installs_slirp(self):
+        plan = deps.install_plan(
+            {"family": "arch", "name": "CachyOS Linux"},
+            which=available("git", "podman", "yay"), geteuid=lambda: 1000)
+        self.assertEqual(plan["packages"], ["slirp4netns"])
+        self.assertEqual(plan["commands"],
+                         [["yay", "-S", "--needed", "slirp4netns"]])
 
     def test_ubuntu_installs_rootless_helpers(self):
         plan = deps.install_plan(
             {"family": "debian", "name": "Ubuntu"},
             which=available("git", "apt-get", "pkexec"), geteuid=lambda: 1000)
-        self.assertEqual(plan["packages"], ["podman", "uidmap", "slirp4netns", "fuse-overlayfs"])
+        self.assertEqual(plan["packages"], ["podman", "slirp4netns", "uidmap", "fuse-overlayfs"])
         self.assertEqual(plan["commands"][0], ["pkexec", "apt-get", "update"])
         self.assertEqual(plan["commands"][1][:4], ["pkexec", "apt-get", "install", "-y"])
 
