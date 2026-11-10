@@ -128,6 +128,10 @@ class Window(QWidget):
         self.runtime_box = QGroupBox()
         self.label(self.runtime_box, "Runtime source", "setTitle")
         runtime_fields = QVBoxLayout(self.runtime_box)
+        self.source_hint = QLabel()
+        self.label(self.source_hint, "Leave both unchecked to use the official upstream AppImage.")
+        self.source_hint.setWordWrap(True)
+        runtime_fields.addWidget(self.source_hint)
         self.test_branch = QCheckBox()
         self.label(self.test_branch, "Build upstream test branch (no PRs)", "setText")
         self.test_branch.setChecked(self.current_test)
@@ -155,6 +159,7 @@ class Window(QWidget):
         runtime_fields.addWidget(self.pr_list)
         self.custom.toggled.connect(self.custom_toggled)
         self.custom_toggled(self.current_custom)
+        self.test_toggled(self.current_test)
         self.tabs.addTab(self.runtime_box, "")
         self.tab_labels.append((self.runtime_box, "Source builds"))
 
