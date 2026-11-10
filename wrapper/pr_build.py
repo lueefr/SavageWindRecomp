@@ -196,6 +196,8 @@ def _toolchain_recipe(path):
         line = original.strip()
         if not line or line.startswith("#"):
             continue
+        if run_parts and not run_parts[-1].endswith("\\"):
+            raise InstallError("Unsupported extra instructions in upstream Containerfile.")
         if line.startswith(("FROM ", "ARG ", "RUN ")) and (
                 not run_parts or not run_parts[-1].endswith("\\")):
             instructions.append(line.split(maxsplit=1)[0])
@@ -245,9 +247,12 @@ def _prepare_toolchain(source, stage, emit, cancel, logfile):
         _run(["podman", "commit", container, image], stage, emit, cancel, logfile)
     finally:
         # A failed download or cancellation must not leave an orphan container behind.
-        subprocess.run(["podman", "rm", "--force", container], env=host_environment(),
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
-                       check=False)
+        try:
+            subprocess.run(["podman", "rm", "--force", container], env=host_environment(),
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            emit("log", f"Could not clean temporary Podman container {container}.", None)
     return image
 
 
