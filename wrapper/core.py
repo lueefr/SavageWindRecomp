@@ -249,9 +249,9 @@ def installed_runtime(root, state):
 
 
 def reset_install(root, confirmation):
-    """Erase only the installed game and runtimes after typed confirmation."""
+    """Remove installed game/runtime artifacts but preserve saves and settings."""
     if confirmation != "DELETE":
-        raise InstallError("Type DELETE to confirm deletion, including all saves.")
+        raise InstallError("Type DELETE to confirm. Saves and settings will be preserved.")
     root = Path(root).resolve()
     if root in (Path("/"), Path.home()):
         raise InstallError("Refusing to delete an unsafe directory.")
@@ -264,10 +264,37 @@ def reset_install(root, confirmation):
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise InstallError("Close the game and other installers first.") from error
+        data = game_data(root)
         targets = [root / name for name in (
-            "root", "game", "extracted", "SavageWind-official.AppImage",
-            "SavageWind-custom.AppImage", "SavageWind-test.AppImage")]
-        targets += [metadata / name for name in ("state.json", "rollback")]
+            "root", "extracted", "SavageWind-official.AppImage",
+            "SavageWind-custom.AppImage", "SavageWind-test.AppImage",
+            "SavageWind-FSR2.AppImage")]
+        # Do not follow symlinks, including game/ and private metadata paths.
+        if data.is_symlink():
+            raise InstallError("Refusing to delete inside a symlinked game/ directory.")
+        if data.exists() and not data.is_dir():
+            raise InstallError("game/ is not a directory.")
+        # Keep both Linux and upstream user save/configuration locations.
+        protected = {"save", "saves", "savestates", "config", "configs",
+                     "profiles", ".config", "savagewind.ini"}
+        extensions = {".ini", ".cfg", ".conf", ".toml", ".json", ".yaml", ".yml"}
+        if data.is_dir():
+            for child in data.iterdir():
+                if child.name in protected or child.suffix.lower() in extensions:
+                    continue
+                if child.name == ".xdg":
+                    if child.is_symlink() or not child.is_dir():
+                        raise InstallError("game/.xdg must be a real directory.")
+                    # Application settings and per-application data may contain saves.
+                    for nested in child.iterdir():
+                        if nested.name not in ("config", "data"):
+                            targets.append(nested)
+                    continue
+                targets.append(child)
+        for child in metadata.iterdir():
+            if child.name not in ("gui.json", "operation.lock"):
+                targets.append(child)
+        # Check every affected location before making any destructive changes.
         for target in targets:
             if target.is_symlink():
                 raise InstallError(f"Refusing to delete a symlink: {target}")
@@ -278,6 +305,10 @@ def reset_install(root, confirmation):
                 shutil.rmtree(target)
             elif target.exists():
                 target.unlink()
+        if (data / ".xdg").is_dir() and not any((data / ".xdg").iterdir()):
+            (data / ".xdg").rmdir()
+        if data.is_dir() and not any(data.iterdir()):
+            data.rmdir()
 
 
 def check_cancel(cancel):
