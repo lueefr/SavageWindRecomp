@@ -937,10 +937,13 @@ def import_packages(root, paths, emit, cancel):
 
 
 class Pipeline:
-    def __init__(self, root, emit, ask, cancel, prs=None):
+    def __init__(self, root, emit, ask, cancel, prs=None, mode="install"):
         self.root = Path(root).resolve()
         self.emit, self.ask, self.cancel = emit, ask, cancel
         self.prs = prs  # None: preserve runtime; []: official; "test": upstream test; list: PRs
+        if mode not in ("install", "build_only", "play", "native"):
+            raise ValueError("Invalid portable installer operation")
+        self.mode = mode
         self._last_progress = 0.0
         self._last_log = 0.0
 
@@ -960,6 +963,16 @@ class Pipeline:
                 return
             self._last_log = now
         self.emit(kind, message, fraction)
+
+    def launch_existing(self, root, installed):
+        self.status("stage", "Iniciando o Savage Wind...")
+        with (root / ".sw-wrapper/game.log").open("ab") as logfile:
+            process = subprocess.Popen([str(installed), "--play", str(game_files(root))],
+                                       env=portable_env(root, play=True), cwd=root,
+                                       start_new_session=True, stdout=subprocess.DEVNULL,
+                                       stderr=logfile, pass_fds=(self._lock_fd,))
+        self.status("log", f"Jogo iniciado (PID {process.pid}).")
+        return "launched"
 
     def run(self, source=None):
         # Prevent two GUI instances from replacing the same AppImage or extracted files.
@@ -1021,11 +1034,51 @@ class Pipeline:
                 write_state(root, state)
         portable_env(root)
         state = read_state(root)
+        if self.mode in ("play", "native"):
+            # Playing and recompiling the player's native library are explicit,
+            # independent operations. Neither compiles a new AppImage.
+            installed = installed_runtime(root, state)
+            if not installed:
+                raise InstallError("No installed AppImage is selected. Build an AppImage first.")
+            if not valid_game(game_files(root)):
+                raise InstallError("No valid game files in root/. Import your own game files first.")
+            if self.mode == "play":
+                if not compiled_code(root):
+                    raise InstallError("No valid native game library in game/. "
+                                       "Use 'Recompile game code' explicitly if needed.")
+                if state.get("built_cpu") and state["built_cpu"] != cpu_target():
+                    raise InstallError("The native game code targets another CPU. "
+                                       "Recompilation must be requested explicitly.")
+                active = (state.get("test_digest") if state.get("runtime_source") == "test" else
+                          state.get("custom_digest") if state.get("runtime_source") == "custom" else
+                          state.get("official_digest"))
+                if state.get("built_digest") != active:
+                    self.status("log", "Launching with existing swgame.so without rebuilding. "
+                                "The new AppImage may require a matching library; the upstream "
+                                "loader will check compatibility.")
+                return self.launch_existing(root, installed)
+            self.status("reveal", "Recompiling game code at your request...")
+            build_game(root, installed, self.status, self.cancel)
+            active = (state.get("test_digest") if state.get("runtime_source") == "test" else
+                      state.get("custom_digest") if state.get("runtime_source") == "custom" else
+                      state.get("official_digest"))
+            state["built_digest"] = active
+            state["built_cpu"] = cpu_target()
+            write_state(root, state)
+            self.status("progress", "Native game code compiled. Use Play to launch.", 100)
+            return "native-built"
+        build_only = self.mode == "build_only" or (
+            self.mode == "install" and self.prs is not None and (
+                self.prs == "test" or (isinstance(self.prs, list) and bool(self.prs))))
+        if build_only and not (self.prs == "test" or
+                               isinstance(self.prs, list) and bool(self.prs)):
+            raise InstallError("Select the upstream test branch or at least one PR to build an AppImage.")
         if source and valid_game(game_files(root)):
             raise InstallError("O jogo já está instalado nesta pasta. Seus arquivos não serão substituídos.")
-        if not valid_game(game_files(root)) and not source:
+        if not build_only and not valid_game(game_files(root)) and not source:
             return "setup"
-        if not from_setup and source is None and installed_runtime(root, state) is None:
+        if (not build_only and not from_setup and source is None and
+                installed_runtime(root, state) is None):
             return "setup"
         # Check availability before copying many GiB of game files.
         if source and game_files(root).exists() and not valid_game(game_files(root)):
@@ -1123,6 +1176,13 @@ class Pipeline:
                         if rollback:
                             rollback.restore()
                         raise
+        if build_only:
+            if not installed:
+                raise InstallError("No AppImage was produced by the selected source build.")
+            self.status("source-finish", f"AppImage ready: {installed.name}", 100)
+            self.status("log", "AppImage-only operation completed; the game's native "
+                        "library, game files and saves were not changed.")
+            return "built"
         try:
             if not installed:
                 if release_error:
@@ -1161,16 +1221,9 @@ class Pipeline:
                 # Adopt a working install without forcing an unnecessary rebuild.
                 state["built_cpu"] = target
                 write_state(root, state)
-            self.status("stage", "Iniciando o Savage Wind...")
-            with (root / ".sw-wrapper/game.log").open("ab") as logfile:
-                process = subprocess.Popen([str(installed), "--play", str(game_files(root))],
-                                           env=portable_env(root, play=True), cwd=root,
-                                           start_new_session=True, stdout=subprocess.DEVNULL,
-                                           stderr=logfile, pass_fds=(self._lock_fd,))
             if rollback:
                 rollback.commit()
-            self.status("log", f"Jogo iniciado (PID {process.pid}).")
-            return "launched"
+            return self.launch_existing(root, installed)
         except BaseException:
             if rollback:
                 rollback.restore()
