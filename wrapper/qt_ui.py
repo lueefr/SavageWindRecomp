@@ -284,6 +284,9 @@ class Window(QWidget):
             QMessageBox.critical(self, "Savage Wind", str(error))
             return
         self.source.clear()
+        self.current_custom = False
+        self.custom.setChecked(False)
+        self.pr_list.clear()
         for field in self.packages.values():
             field.clear()
         self.game_status()
@@ -324,7 +327,7 @@ class Window(QWidget):
         return None
 
     def pick(self):
-        picked = QFileDialog.getExistingDirectory(self, "Pasta com os arquivos do jogo")
+        picked = QFileDialog.getExistingDirectory(self, tr("Game files", self.language))
         if picked:
             self.source.setText(picked)
 
