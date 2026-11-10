@@ -429,6 +429,7 @@ class Window(Gtk.Window):
         self.progress_box.hide()
         self.form.show_all()
         self.custom_toggled()
+        self.test_toggled()
 
     def close_window(self, *_):
         if self.running:
@@ -534,6 +535,7 @@ class Window(Gtk.Window):
                     self.progress_box.hide()
                     self.form.show_all()
                     self.custom_toggled()
+                    self.test_toggled()
                     self.game_status()
                 else:
                     self.reveal(tr("Operation cancelled.", self.language))
