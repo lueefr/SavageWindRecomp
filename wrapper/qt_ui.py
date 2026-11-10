@@ -168,6 +168,18 @@ class Window(QWidget):
         self.label(self.install, "Install and play")
         self.install.clicked.connect(self.install_files)
         actions.addWidget(self.install)
+        self.play_button = QPushButton()
+        self.label(self.play_button, "Play existing game")
+        self.play_button.clicked.connect(self.play_existing)
+        actions.addWidget(self.play_button)
+        self.build_button = QPushButton()
+        self.label(self.build_button, "Build AppImage only")
+        self.build_button.clicked.connect(self.build_image)
+        actions.addWidget(self.build_button)
+        self.native_button = QPushButton()
+        self.label(self.native_button, "Recompile game code")
+        self.native_button.clicked.connect(self.recompile_game)
+        actions.addWidget(self.native_button)
         self.delete_button = QPushButton()
         self.label(self.delete_button, "Delete installation")
         self.delete_button.clicked.connect(self.delete_installation)
@@ -182,7 +194,13 @@ class Window(QWidget):
         self.label(self.stage, "Preparing...")
         self.stage.setWordWrap(True)
         tasks.addWidget(self.stage)
+        self.eta = QLabel("")
+        self.eta.setWordWrap(True)
+        tasks.addWidget(self.eta)
         self.step_names = ["Storage", "Game files", "Updates", "Recompilation", "Launch game"]
+        self.source_steps = ["Fetch sources", "Apply pull requests", "Prepare compiler",
+                             "Compile runtime", "Package AppImage", "Publish AppImage"]
+        self._source_mode = False
         self.step_view = QListWidget()
         self.step_view.setFixedHeight(128)
         tasks.addWidget(self.step_view)
@@ -274,6 +292,11 @@ class Window(QWidget):
     def game_status(self):
         state = read_state(self.root)
         existing = valid_game(self.root / "root") or valid_game(self.root / "extracted")
+        self.install.setVisible(not existing)
+        self.play_button.setVisible(existing)
+        self.play_button.setEnabled(existing and compiled_code(self.root))
+        self.native_button.setVisible(existing)
+        self.build_button.setVisible(True)
         if existing:
             where = self.root / ("root" if valid_game(self.root / "root") else "extracted")
             self.source.setText(str(where))
@@ -297,7 +320,7 @@ class Window(QWidget):
     def delete_installation(self):
         if self.running:
             return
-        warning = tr("This permanently removes root/, game/, all saves, and downloaded/built AppImages. The portable launcher remains.", self.language)
+        warning = tr("Delete extracted game files, compiled code and AppImages? Saves and settings are preserved.", self.language)
         reply = QMessageBox.warning(self, tr("Delete installation", self.language), warning,
                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                     QMessageBox.StandardButton.No)
@@ -334,7 +357,8 @@ class Window(QWidget):
 
     def mark_step(self, stage):
         self._step_current = stage
-        for i, name in enumerate(self.step_names):
+        names = self.source_steps if self._source_mode else self.step_names
+        for i, name in enumerate(names):
             mark = "✓" if i < stage else "▶" if i == stage else "○"
             label = f"{mark}  {tr(name, self.language)}"
             if i >= self.step_view.count():
@@ -391,6 +415,41 @@ class Window(QWidget):
             return
         self.start(paths)
 
+    def selected_source(self):
+        if self.test_branch.isChecked():
+            return "test"
+        if self.custom.isChecked():
+            selection = self.selected_prs()
+            if not selection:
+                QMessageBox.warning(self, "Savage Wind",
+                                    tr("Select at least one pull request.", self.language))
+                return None
+            return selection
+        return []
+
+    def build_image(self):
+        selection = self.selected_source()
+        if selection is None:
+            return
+        if selection == []:
+            QMessageBox.warning(self, "Savage Wind",
+                                tr("Select test or pull requests to compile an AppImage.", self.language))
+            return
+        self.start(None, mode="build_only", prs=selection)
+
+    def recompile_game(self):
+        if not valid_game(self.root / "root"):
+            QMessageBox.warning(self, "Savage Wind",
+                                tr("Please import game files before recompiling.", self.language))
+            return
+        selection = self.selected_source()
+        if selection is not None:
+            self.start("__reuse__", mode="native", prs=selection)
+
+    def play_existing(self):
+        if valid_game(self.root / "root"):
+            self.start("__reuse__", mode="play", prs=None)
+
     def append_log(self, message, live=False):
         # Replace only the active progress block; completed steps remain in history.
         cursor = self.log.textCursor()
@@ -430,7 +489,7 @@ class Window(QWidget):
         else:
             event.accept()
 
-    def start(self, source):
+    def start(self, source, mode="install", prs=None):
         if self.running:
             return
         if source and source != "__reuse__" and not isinstance(source, dict) and not valid_game(source):
@@ -447,8 +506,10 @@ class Window(QWidget):
         self.live_start = None
         self.log.hide()
         self.toggle.setText(tr("Show log", self.language))
+        self._source_mode = mode == "build_only"
         self.mark_step(-1)
         self.stage.setText(tr("Starting...", self.language))
+        self.eta.clear()
         def emit(kind, message, fraction):
             self.events.put(("event", kind, message, fraction))
         def ask(message):
@@ -459,11 +520,12 @@ class Window(QWidget):
                 if self.cancel_event.is_set():
                     raise Cancelled()
             return bool(answer and answer[0])
-        prs = ("test" if self.test_branch.isChecked() else
-               self.selected_prs() if self.custom.isChecked() else []) if self.prs_changed else None
+        if mode == "install":
+            prs = ("test" if self.test_branch.isChecked() else
+                   self.selected_prs() if self.custom.isChecked() else []) if self.prs_changed else None
         def work():
             try:
-                result = Pipeline(self.root, emit, ask, self.cancel_event, prs=prs).run(source)
+                result = Pipeline(self.root, emit, ask, self.cancel_event, prs=prs, mode=mode).run(source)
                 self.events.put(("done", result))
             except Cancelled:
                 self.events.put(("done", "cancelled"))
@@ -481,6 +543,24 @@ class Window(QWidget):
                 _, kind, message, fraction = event
                 if kind == "reveal":
                     self.reveal(message)
+                    continue
+                if kind == "source-step":
+                    self._source_mode = True
+                    self.mark_step(int(fraction))
+                    self.stage.setText(tr(message, self.language))
+                    self.bar.setRange(0, 0)
+                    self.append_log(message)
+                    continue
+                if kind == "source-eta":
+                    self.eta.setText(progress_text(message, self.language))
+                    continue
+                if kind == "source-finish":
+                    self._source_mode = True
+                    self.mark_step(len(self.source_steps))
+                    self.stage.setText(tr(message, self.language))
+                    self.bar.setRange(0, 100)
+                    self.bar.setValue(100)
+                    self.append_log(message)
                     continue
                 if kind == "log":
                     self.append_log(message)
@@ -533,6 +613,14 @@ class Window(QWidget):
                 self.running = False
                 if event[1] == "launched":
                     QApplication.instance().quit()
+                elif event[1] in ("built", "native-built"):
+                    self.cancel_button.setEnabled(False)
+                    self.back_button.show()
+                    self.mark_step(len(self.source_steps) if event[1] == "built" else 4)
+                    self.stage.setText(tr("AppImage build completed." if event[1] == "built"
+                                          else "Game code recompilation completed.", self.language))
+                    self.bar.setRange(0, 100)
+                    self.bar.setValue(100)
                 elif event[1] == "setup":
                     self.progress_box.hide()
                     self.form.show()
