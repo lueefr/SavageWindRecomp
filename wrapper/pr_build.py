@@ -124,6 +124,7 @@ def _run(argv, cwd, emit, cancel, logfile):
     except OSError as error:
         raise InstallError(f"Could not start build tool {argv[0]}: {error}") from error
     pending = bytearray()
+    recent = []
     try:
         with selectors.DefaultSelector() as sel:
             sel.register(process.stdout, selectors.EVENT_READ)
@@ -142,12 +143,20 @@ def _run(argv, cwd, emit, cancel, logfile):
                         pending = bytearray(remain)
                         line = line.decode("utf-8", "replace")[:1200]
                         logfile.write(line + "\n")
+                        recent.append(line)
+                        if len(recent) > 16:
+                            recent.pop(0)
                         emit("log", line, None)
         if pending:
             logfile.write(pending.decode("utf-8", "replace")[:1200] + "\n")
         status = process.wait()
         if status:
-            raise InstallError(f"Build command exited with code {status}. See source-build log.")
+            detail = next((item for item in reversed(recent)
+                           if "error" in item.lower() or "setup network:" in item.lower()
+                           or item.lstrip().startswith("E:")),
+                          recent[-1] if recent else "No output captured.")
+            raise InstallError(f"{argv[0]} exited with code {status}: {detail[:280]}. "
+                               "See source-build log for details.")
     except BaseException:
         if process.poll() is None:
             stop_process(process)
