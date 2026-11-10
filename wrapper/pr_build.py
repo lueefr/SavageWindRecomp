@@ -185,6 +185,72 @@ def _podman_ready():
                            "Please run the launcher as your regular user.")
 
 
+def _toolchain_recipe(path):
+    """Extract one shell RUN instruction without executing Dockerfile text on the host."""
+    try:
+        content = Path(path).read_text(encoding="utf-8")
+    except OSError as error:
+        raise InstallError(f"Cannot read upstream toolchain recipe: {error}") from error
+    instructions, run_parts = [], []
+    for original in content.splitlines():
+        line = original.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(("FROM ", "ARG ", "RUN ")) and (
+                not run_parts or not run_parts[-1].endswith("\\")):
+            instructions.append(line.split(maxsplit=1)[0])
+        if instructions and instructions[-1] == "RUN":
+            if line.startswith("RUN "):
+                line = line[4:]
+            run_parts.append(line)
+    if (instructions != ["FROM", "ARG", "RUN"] or
+            not re.search(r"(?m)^FROM docker\.io/library/ubuntu:22\.04\s*$", content) or
+            not re.search(r"(?m)^ARG DEBIAN_FRONTEND=noninteractive\s*$", content) or
+            not run_parts):
+        raise InstallError("Unsupported upstream Containerfile. Expected Ubuntu 22.04 with one RUN command.")
+    parts = [part[:-1].rstrip() if part.endswith("\\") else part for part in run_parts]
+    recipe = " ".join(parts).strip()
+    if not recipe.startswith("apt-get update && apt-get install "):
+        raise InstallError("The upstream toolchain recipe has changed unexpectedly.")
+    return recipe
+
+
+def _image_exists(image):
+    try:
+        result = subprocess.run(["podman", "image", "exists", image],
+                                env=host_environment(), stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise InstallError(f"Cannot check the local Podman toolchain cache: {error}") from error
+    return result.returncode == 0
+
+
+def _prepare_toolchain(source, stage, emit, cancel, logfile):
+    """Install dependencies using rootless podman run; Buildah build rejects slirp4netns."""
+    recipe = _toolchain_recipe(source / "tools/linux/Containerfile")
+    digest = hashlib.sha256(recipe.encode("utf-8")).hexdigest()[:20]
+    image = f"localhost/savagewind-toolchain:recipe-{digest}"
+    if _image_exists(image):
+        emit("log", f"Using cached local compiler image {image}", None)
+        return image
+    container = f"sw-toolchain-{stage.name}"
+    emit("stage", "Preparing Linux compiler with rootless Podman...", None)
+    emit("log", "Using podman run with slirp4netns; podman build cannot use this network in rootless mode.", None)
+    try:
+        _run(["podman", "run", "--name", container, "--arch", "amd64",
+              "--network=slirp4netns", "-e", "DEBIAN_FRONTEND=noninteractive",
+              "docker.io/library/ubuntu:22.04", "/bin/sh", "-ec", recipe],
+             stage, emit, cancel, logfile)
+        check_cancel(cancel)
+        _run(["podman", "commit", container, image], stage, emit, cancel, logfile)
+    finally:
+        # A failed download or cancellation must not leave an orphan container behind.
+        subprocess.run(["podman", "rm", "--force", container], env=host_environment(),
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+                       check=False)
+    return image
+
+
 def build_pr_appimage(root, prs, emit, cancel, ask=None):
     """Compile upstream test with selected pinned PRs in rootless Podman."""
     return build_upstream_appimage(root, emit, cancel, ask=ask, prs=validated(prs))
@@ -238,14 +304,7 @@ def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
             if not SHA.fullmatch(commit):
                 raise InstallError("Git returned an invalid source revision.")
             emit("log", f"Source revision: {commit}", None)
-            emit("stage", "Preparing rootless Podman build container...", None)
-            image = "localhost/savagewind-local-builder:current"
-            # Use an explicit rootless network backend; the host's default pasta may fail
-            # before the Dockerfile runs. Never use --network=host for PR code.
-            emit("log", "Podman networking: slirp4netns (rootless, not host networking).", None)
-            _run(["podman", "build", "--network=slirp4netns", "--arch", "amd64", "-t", image,
-                  "-f", "tools/linux/Containerfile", "tools/linux"],
-                 source, emit, cancel, output)
+            image = _prepare_toolchain(source, stage, emit, cancel, output)
             run = ["podman", "run", "--rm", "--network=slirp4netns", "--arch", "amd64",
                    "--volume", f"{source}:/src:Z", "--workdir", "/src", image]
             emit("stage", "Generating the Linux build in Podman...", None)
