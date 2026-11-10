@@ -146,6 +146,21 @@ class InstallerFeatures(unittest.TestCase):
             self.assertNotIn(str(work / "game"), command)
             self.assertEqual(command[-2:], ["clang", "--version"])
 
+    def test_untrusted_checkout_cannot_redirect_compiler_cache(self):
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            source = base / "source"
+            seed = base / "seed"
+            outside = base / "outside"
+            source.mkdir()
+            seed.mkdir()
+            outside.mkdir()
+            (outside / "important").write_text("untouched")
+            (source / "build").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(core.InstallError, "Refusing to overwrite"):
+                pr_build.seed_sources(seed, source, threading.Event())
+            self.assertEqual((outside / "important").read_text(), "untouched")
+
     def test_builder_reports_missing_bundled_toolchain(self):
         with mock.patch.dict("os.environ", {"SAVAGEWIND_BUILDER_ROOT": "/nonexistent",
                                            "SAVAGEWIND_BWRAP": "/nonexistent"}):
