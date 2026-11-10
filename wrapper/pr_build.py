@@ -265,6 +265,30 @@ def _prepare_toolchain(source, stage, emit, cancel, logfile):
     return image
 
 
+def _cleanup_stage(stage, emit):
+    """Remove only our disposable checkout without masking a successful build."""
+    try:
+        shutil.rmtree(stage)
+        return
+    except OSError as error:
+        emit("log", f"Temporary checkout cleanup needs namespace permissions: {error}", None)
+    # Old rootless containers may leave subordinate-UID-owned files. Recover only
+    # the freshly created, random stage folder; never touch root/, game/, or saves.
+    try:
+        result = subprocess.run(
+            ["podman", "unshare", "rm", "-rf", "--", str(stage)],
+            env=host_environment(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=90, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        emit("log", f"Temporary checkout was retained: {error}", None)
+        return
+    if result.returncode or stage.exists():
+        detail = result.stderr.strip()[-350:] or "cleanup did not remove the directory"
+        emit("log", f"Temporary checkout was retained: {detail}", None)
+    else:
+        emit("log", "Temporary checkout cleaned through rootless Podman.", None)
+
+
 def build_pr_appimage(root, prs, emit, cancel, ask=None):
     """Compile upstream test with selected pinned PRs in rootless Podman."""
     return build_upstream_appimage(root, emit, cancel, ask=ask, prs=validated(prs))
@@ -321,8 +345,13 @@ def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
                 raise InstallError("Git returned an invalid source revision.")
             emit("log", f"Source revision: {commit}", None)
             image = _prepare_toolchain(source, stage, emit, cancel, output)
-            run = ["podman", "run", "--rm", "--network=pasta", "--arch", "amd64",
-                   "--volume", f"{source}:/src:Z", "--workdir", "/src", image]
+            # Run as the host UID/GID so generated Zig files remain manageable.
+            # This applies only to builds with the user's disposable checkout.
+            # The earlier apt-get toolchain container still runs as container root.
+            run = ["podman", "run", "--rm", "--network=pasta",
+                   "--userns=keep-id", "--env", "HOME=/tmp",
+                   "--arch", "amd64", "--volume", f"{source}:/src:Z",
+                   "--workdir", "/src", image]
             emit("stage", "Generating the Linux build in Podman...", None)
             _run(run + ["bash", "tools/linux/gen_helper.sh", "x86_64"],
                  source, emit, cancel, output)
@@ -359,5 +388,5 @@ def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
                     "mtime_ns": stat.st_mtime_ns, "commit": commit,
                     "selection": f"test:{commit}" if prs is None else selection_key(prs)}
     finally:
-        # Remove only the temporary source checkout, never game files or saves.
-        shutil.rmtree(stage)
+        # A cleanup failure is not a build failure; the AppImage may be complete.
+        _cleanup_stage(stage, emit)
