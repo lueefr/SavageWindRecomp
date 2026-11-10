@@ -27,6 +27,7 @@ class Window(Gtk.Window):
         self.tab_labels = []
         self.pr_checks = []
         self.prs_changed = False
+        self.source_tab = 0
         self.current_custom = read_state(self.root).get("runtime_source") == "custom"
         self.set_title(tr("Savage Wind — Installer", self.language))
         self.set_default_size(740, 670)
@@ -104,6 +105,7 @@ class Window(Gtk.Window):
             self.packages[name] = field
         self.tabs.append_page(packages_page, Gtk.Label())
         self.tab_labels.append((packages_page, "NSP / XCI"))
+        self.tabs.connect("switch-page", self.remember_source_tab)
         self.form.pack_start(self.tabs, False, False, 0)
         self.existing_label = Gtk.Label()
         self.existing_label.set_halign(Gtk.Align.START)
@@ -224,6 +226,10 @@ class Window(Gtk.Window):
         enabled = self.custom.get_active()
         for widget in (self.pr_intro, self.pr_refresh, self.pr_scroll):
             widget.set_visible(enabled)
+
+    def remember_source_tab(self, _, __, index):
+        if index in (0, 1):
+            self.source_tab = index
 
     def selected_prs(self):
         return [pr for pr, check in self.pr_checks if check.get_active()]
@@ -349,7 +355,7 @@ class Window(Gtk.Window):
         if valid_game(self.root / "root") or valid_game(self.root / "extracted"):
             self.start("__reuse__")
             return
-        if self.tabs.get_current_page() != 1:
+        if self.source_tab == 0:
             source = self.source.get_text().strip()
             if not valid_game(source):
                 self.alert(tr("Please select a folder containing exefs/ and romfs/.", self.language))
