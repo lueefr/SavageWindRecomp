@@ -211,6 +211,20 @@ class InstallerFeatures(unittest.TestCase):
                                                          threading.Event(), None)
             self.assertEqual(remove.call_args.args[0][:3], ["podman", "rm", "--force"])
 
+    def test_tun_preflight_stops_before_source_download(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with mock.patch.object(pr_build, "ensure_tools"):
+                with mock.patch.object(pr_build, "_podman_ready"):
+                    with mock.patch.object(pr_build, "ensure_tun",
+                                           side_effect=core.Cancelled()) as tun:
+                        with mock.patch.object(pr_build, "_run") as runner:
+                            with self.assertRaises(core.Cancelled):
+                                pr_build.build_test_appimage(
+                                    folder, lambda *_: None, threading.Event(),
+                                    ask=lambda _: False)
+                            runner.assert_not_called()
+                            tun.assert_called_once()
+
     def test_user_declining_package_install_does_not_run_build(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
