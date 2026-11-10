@@ -209,7 +209,11 @@ def _capture(command, source):
 
 
 def seed_sources(seed, source, cancel):
-    """Copy prebuilt, version-pinned dependencies; no host packages or online pip."""
+    """Copy prebuilt dependencies only into a fresh, non-symlink build folder."""
+    folder = source / "build"
+    if folder.exists() or folder.is_symlink():
+        raise InstallError("The downloaded source contains a build/ path. Refusing to overwrite it.")
+    folder.mkdir()
     for suffix in ("linux/src", "linux/x86_64/deps", "linux/x86_64/gen-venv", "zig", "zig-dl"):
         check_cancel(cancel)
         item = seed / "build" / suffix
