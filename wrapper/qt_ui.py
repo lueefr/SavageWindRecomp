@@ -440,6 +440,9 @@ class Window(QWidget):
         self.start(None, mode="build_only", prs=selection)
 
     def recompile_game(self):
+        if self.custom.isChecked() and not self.selected_prs() and self.current_custom:
+            self.start("__reuse__", mode="native", prs=None)
+            return
         if not valid_game(self.root / "root"):
             QMessageBox.warning(self, "Savage Wind",
                                 tr("Please import game files before recompiling.", self.language))
@@ -545,6 +548,13 @@ class Window(QWidget):
                 _, kind, message, fraction = event
                 if kind == "reveal":
                     self.reveal(message)
+                    continue
+                if kind == "native-start":
+                    self._source_mode = False
+                    self.mark_step(-1)
+                    self.eta.clear()
+                    self.stage.setText(tr(message, self.language))
+                    self.bar.setRange(0, 0)
                     continue
                 if kind == "source-step":
                     self._source_mode = True
