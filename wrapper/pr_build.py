@@ -12,6 +12,7 @@ import selectors
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.request
 
 from .deps import ensure_tools, ensure_tun, host_environment
@@ -112,7 +113,105 @@ def test_runtime(root, state):
     return path
 
 
-def _run(argv, cwd, emit, cancel, logfile):
+SOURCE_STAGES = ("Fetch sources", "Apply pull requests", "Prepare compiler",
+                 "Compile runtime", "Package AppImage", "Publish AppImage")
+
+
+def elapsed_text(seconds):
+    total = max(0, int(seconds))
+    if total >= 3600:
+        return f"{total // 3600}h {total // 60 % 60:02d}min"
+    if total >= 60:
+        return f"{total // 60}min {total % 60:02d}s"
+    return f"{total}s"
+
+
+class SourceTimer:
+    """Measure real build stages; estimate time from recorded past runs."""
+    def __init__(self, root, mode, emit, clock=time.monotonic):
+        self.root, self.mode, self.emit, self.clock = Path(root), mode, emit, clock
+        self.path = self.root / ".sw-wrapper/source-times.json"
+        self.started = clock()
+        self.current = -1
+        self.phase_started = self.started
+        self.durations = {}
+        self.last_tick = 0.0
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            previous = data.get(mode, {})
+            self.history = {int(k): float(v) for k, v in previous.items()
+                            if str(k).isdigit() and 0 <= int(k) < len(SOURCE_STAGES)
+                            and isinstance(v, (int, float)) and 0 < v < 86400}
+        except (OSError, ValueError, TypeError, AttributeError):
+            self.history = {}
+
+    def step(self, index):
+        now = self.clock()
+        if self.current >= 0:
+            self.durations[self.current] = max(0.001, now - self.phase_started)
+        self.current = index
+        self.phase_started = now
+        self.emit("source-step", SOURCE_STAGES[index], index)
+        self.tick(force=True)
+
+    def tick(self, force=False):
+        if self.current < 0:
+            return
+        now = self.clock()
+        if not force and now - self.last_tick < 1.0:
+            return
+        self.last_tick = now
+        spent = now - self.started
+        elapsed_stage = now - self.phase_started
+        pending = range(self.current, len(SOURCE_STAGES))
+        known = all(index in self.history for index in pending)
+        if known:
+            remaining = max(0, self.history[self.current] - elapsed_stage)
+            remaining += sum(self.history[i] for i in range(self.current + 1, len(SOURCE_STAGES)))
+            eta = f"ETA estimado: ~{elapsed_text(remaining)} (execuções anteriores)"
+        elif len(self.durations) >= 2:
+            # A preliminary, explicitly approximate ETA from completed stages only.
+            mean = sum(self.durations.values()) / len(self.durations)
+            remaining = max(0, mean - elapsed_stage) + mean * (len(SOURCE_STAGES) - self.current - 1)
+            eta = f"ETA preliminar: ~{elapsed_text(remaining)} (pode variar)"
+        else:
+            eta = "ETA: calculando..."
+        self.emit("source-eta", f"Decorrido: {elapsed_text(spent)} · {eta}", None)
+
+    def finish(self):
+        if self.current >= 0:
+            self.durations[self.current] = max(0.001, self.clock() - self.phase_started)
+        if self.path.is_symlink():
+            raise InstallError("Cannot write build timings through a symbolic link.")
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        existing = data.get(self.mode, {})
+        if not isinstance(existing, dict):
+            existing = {}
+        for idx, duration in self.durations.items():
+            old = existing.get(str(idx))
+            if isinstance(old, (int, float)) and 0 < old < 86400:
+                duration = 0.65 * float(old) + 0.35 * duration
+            existing[str(idx)] = round(duration, 1)
+        data[self.mode] = existing
+        fd, temp = tempfile.mkstemp(prefix=".source-times-", dir=self.path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as out:
+                json.dump(data, out)
+                out.flush()
+                os.fsync(out.fileno())
+            os.replace(temp, self.path)
+        finally:
+            if os.path.exists(temp):
+                os.unlink(temp)
+        self.emit("source-eta", f"Concluído em {elapsed_text(self.clock() - self.started)} · ETA: 0s", None)
+
+
+def _run(argv, cwd, emit, cancel, logfile, meter=None):
     """Stream build output without executing build scripts on the host."""
     check_cancel(cancel)
     emit("stage", "Running: " + " ".join(argv[:4]) + "...", None)
@@ -130,6 +229,8 @@ def _run(argv, cwd, emit, cancel, logfile):
             sel.register(process.stdout, selectors.EVENT_READ)
             while sel.get_map():
                 check_cancel(cancel)
+                if meter is not None:
+                    meter.tick()
                 for key, _ in sel.select(timeout=0.3):
                     data = os.read(key.fd, 16384)
                     if not data:
@@ -236,7 +337,7 @@ def _image_exists(image):
     return result.returncode == 0
 
 
-def _prepare_toolchain(source, stage, emit, cancel, logfile):
+def _prepare_toolchain(source, stage, emit, cancel, logfile, meter=None):
     """Install dependencies using rootless podman run and pasta networking."""
     recipe = _toolchain_recipe(source / "tools/linux/Containerfile")
     digest = hashlib.sha256(recipe.encode("utf-8")).hexdigest()[:20]
@@ -251,9 +352,9 @@ def _prepare_toolchain(source, stage, emit, cancel, logfile):
         _run(["podman", "run", "--name", container, "--arch", "amd64",
               "--network=pasta", "-e", "DEBIAN_FRONTEND=noninteractive",
               "docker.io/library/ubuntu:22.04", "/bin/sh", "-ec", recipe],
-             stage, emit, cancel, logfile)
+             stage, emit, cancel, logfile, meter=meter)
         check_cancel(cancel)
-        _run(["podman", "commit", container, image], stage, emit, cancel, logfile)
+        _run(["podman", "commit", container, image], stage, emit, cancel, logfile, meter=meter)
     finally:
         # A failed download or cancellation must not leave an orphan container behind.
         try:
@@ -388,34 +489,37 @@ def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
     work.mkdir(exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f"{mode}-build-", dir=work))
     log = work / f"{mode}-build.log"
+    tracker = SourceTimer(root, mode, emit)
     try:
         with log.open("w", encoding="utf-8") as output:
             source = stage / "source"
             emit("reveal", "Building upstream test AppImage..." if prs is None
                  else "Building a custom AppImage from selected PRs...", None)
-            emit("stage", "Downloading upstream source...", None)
-            _run(["git", "clone", "--no-tags", "--single-branch", "--branch", "test",
-                  UPSTREAM, str(source)], stage, emit, cancel, output)
+            tracker.step(0)
+            _run(["git", "clone", "--progress", "--no-tags", "--single-branch", "--branch", "test",
+                  UPSTREAM, str(source)], stage, emit, cancel, output, meter=tracker)
+            tracker.step(1)
             for pr in prs or []:
                 check_cancel(cancel)
                 number = pr["number"]
                 emit("stage", f"Applying PR #{number}...", None)
                 _run(["git", "-C", str(source), "fetch", "origin",
-                      f"refs/pull/{number}/head"], stage, emit, cancel, output)
+                      f"refs/pull/{number}/head"], stage, emit, cancel, output, meter=tracker)
                 actual = _capture(["git", "rev-parse", "FETCH_HEAD"], source)
                 if actual != pr["sha"]:
                     raise InstallError(f"PR #{number} changed. Refresh the PR list before building.")
                 _run(["git", "-c", "user.name=Savage Wind Portable",
                       "-c", "user.email=portable@localhost", "-c",
                       "core.hooksPath=/dev/null", "merge", "--no-edit",
-                      "--no-ff", actual], source, emit, cancel, output)
+                      "--no-ff", actual], source, emit, cancel, output, meter=tracker)
             commit = _capture(["git", "rev-parse", "HEAD"], source)
             if not SHA.fullmatch(commit):
                 raise InstallError("Git returned an invalid source revision.")
             output.write(f"Source revision: {commit}\n")
             output.flush()
             emit("log", f"Source revision: {commit}", None)
-            image = _prepare_toolchain(source, stage, emit, cancel, output)
+            tracker.step(2)
+            image = _prepare_toolchain(source, stage, emit, cancel, output, meter=tracker)
             # Run as the host UID/GID so generated Zig files remain manageable.
             # This applies only to builds with the user's disposable checkout.
             # The earlier apt-get toolchain container still runs as container root.
@@ -423,12 +527,13 @@ def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
                    "--userns=keep-id", "--env", "HOME=/tmp",
                    "--arch", "amd64", "--volume", f"{source}:/src:Z",
                    "--workdir", "/src", image]
-            emit("stage", "Generating the Linux build in Podman...", None)
+            tracker.step(3)
             _run(run + ["bash", "tools/linux/gen_helper.sh", "x86_64"],
-                 source, emit, cancel, output)
-            emit("stage", "Packaging the custom AppImage in Podman...", None)
+                 source, emit, cancel, output, meter=tracker)
+            tracker.step(4)
             _run(run + ["bash", "tools/linux/package.sh", "x86_64"],
-                 source, emit, cancel, output)
+                 source, emit, cancel, output, meter=tracker)
+            tracker.step(5)
             results = list((source / "build/dist").glob("Savage_Wind-*-x86_64.AppImage"))
             if len(results) != 1 or results[0].is_symlink() or results[0].stat().st_size < 1024 * 1024:
                 raise InstallError("The build did not produce exactly one x86_64 AppImage.")
@@ -453,6 +558,7 @@ def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
                 if os.path.exists(temp):
                     os.unlink(temp)
             stat = dest.stat()
+            tracker.finish()
             emit("progress", "Upstream test AppImage built." if prs is None
                  else "Custom AppImage built.", 100)
             return {"path": dest, "digest": digest, "size": stat.st_size,
