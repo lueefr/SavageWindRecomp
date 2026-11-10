@@ -110,10 +110,12 @@ class HiddenLauncherTests(unittest.TestCase):
                 self.assertFalse(window.pr_list.isVisible())
                 self.assertEqual(window.tabs.tabText(2), "Compilações locais" if window.language == "pt-BR" else "Source builds")
                 with mock.patch.object(window, "start") as start:
-                    window.source.setText("")
-                    window.install_files()
+                    with mock.patch.object(qt_ui.QMessageBox, "warning") as warning:
+                        window.source.setText("")
+                        window.install_files()
                 # With no game files, a source folder is still required.
                 start.assert_not_called()
+                warning.assert_called_once()
             finally:
                 window.close()
 
