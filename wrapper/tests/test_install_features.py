@@ -105,75 +105,49 @@ class InstallerFeatures(unittest.TestCase):
             self.assertIsNone(pr_build.test_runtime(root, state))
             self.assertIsNone(core.installed_runtime(root, state))
 
-    def test_test_branch_build_does_not_apply_pull_requests(self):
+    def test_test_branch_build_uses_rootless_podman_without_merging_prs(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             revision = "b" * 40
             calls = []
             def fake_run(argv, cwd, emit, cancel, logfile):
                 calls.append(argv)
+                if argv[:2] == ["git", "clone"]:
+                    Path(argv[-1]).mkdir()
                 if "tools/linux/package.sh" in argv:
-                    output = Path(cwd) / "source/build/dist"
+                    output = Path(cwd) / "build/dist"
                     output.mkdir(parents=True, exist_ok=True)
                     (output / "Savage_Wind-test-x86_64.AppImage").write_bytes(
                         b"\x7fELF" + b"x" * 1_100_000)
-            with mock.patch.object(pr_build, "bundled_builder",
-                                   return_value=(root / "rootfs", root / "seed", root / "bwrap")):
-                with mock.patch.object(pr_build, "_run", side_effect=fake_run):
-                    with mock.patch.object(pr_build, "_capture", return_value=revision):
-                        with mock.patch.object(pr_build, "seed_sources") as seed:
+            with mock.patch.object(pr_build, "ensure_tools") as deps:
+                with mock.patch.object(pr_build, "_podman_ready") as ready:
+                    with mock.patch.object(pr_build, "_run", side_effect=fake_run):
+                        with mock.patch.object(pr_build, "_capture", return_value=revision):
                             result = pr_build.build_test_appimage(
-                                root, lambda *_: None, threading.Event())
+                                root, lambda *_: None, threading.Event(), ask=lambda _: True)
             self.assertEqual(result["path"], root / "SavageWind-test.AppImage")
             self.assertEqual(result["commit"], revision)
             self.assertEqual(result["selection"], "test:" + revision)
             self.assertTrue(result["path"].is_file())
-            self.assertTrue(any("git" in x and "clone" in x and "test" in x for x in calls))
+            self.assertTrue(any(x[:2] == ["git", "clone"] and "test" in x for x in calls))
+            self.assertTrue(any(x[:2] == ["podman", "build"] for x in calls))
+            self.assertTrue(any(x[:2] == ["podman", "run"] for x in calls))
             self.assertFalse(any("refs/pull/" in " ".join(x) for x in calls))
-            self.assertFalse(any("podman" in " ".join(x) for x in calls))
             self.assertFalse(any(x[:2] == ["make", "appimage"] for x in calls))
-            seed.assert_called_once()
+            deps.assert_called_once()
+            ready.assert_called_once()
 
-    def test_source_builder_never_uses_host_git_or_podman(self):
+    def test_user_declining_package_install_does_not_run_build(self):
         with tempfile.TemporaryDirectory() as folder:
-            work = Path(folder)
-            command = pr_build.sandbox_command(work / "rootfs", work / "bwrap",
-                                                work / "source", ["clang", "--version"])
-            self.assertEqual(command[0], str(work / "bwrap"))
-            self.assertIn("--unshare-net", command)
-            self.assertNotIn("podman", command)
-            self.assertNotIn("--ro-bind-try", command)
-            self.assertNotIn(str(work / "game"), command)
-            # GitHub source retrieval must have network access, but never relax
-            # the mount isolation or allow untrusted build commands to opt out.
-            fetch = pr_build.sandbox_command(work / "rootfs", work / "bwrap",
-                                             work / "source", ["git", "--version"],
-                                             network=True)
-            self.assertNotIn("--unshare-net", fetch)
-            self.assertIn("--unshare-user", fetch)
-            self.assertEqual(fetch[-2:], ["git", "--version"])
-            self.assertEqual(command[-2:], ["clang", "--version"])
-
-    def test_untrusted_checkout_cannot_redirect_compiler_cache(self):
-        with tempfile.TemporaryDirectory() as folder:
-            base = Path(folder)
-            source = base / "source"
-            seed = base / "seed"
-            outside = base / "outside"
-            source.mkdir()
-            seed.mkdir()
-            outside.mkdir()
-            (outside / "important").write_text("untouched")
-            (source / "build").symlink_to(outside, target_is_directory=True)
-            with self.assertRaisesRegex(core.InstallError, "Refusing to overwrite"):
-                pr_build.seed_sources(seed, source, threading.Event())
-            self.assertEqual((outside / "important").read_text(), "untouched")
-
-    def test_builder_reports_missing_bundled_toolchain(self):
-        with mock.patch.dict("os.environ", {"SAVAGEWIND_BUILDER_ROOT": "/nonexistent",
-                                           "SAVAGEWIND_BWRAP": "/nonexistent"}):
-            with self.assertRaisesRegex(core.InstallError, "embedded source-build toolchain"):
-                pr_build.bundled_builder()
+            root = Path(folder)
+            with mock.patch.object(pr_build, "ensure_tools",
+                                   side_effect=core.Cancelled()) as deps:
+                with mock.patch.object(pr_build, "_run") as runner:
+                    with self.assertRaises(core.Cancelled):
+                        pr_build.build_test_appimage(
+                            root, lambda *_: None, threading.Event(), ask=lambda _: False)
+            deps.assert_called_once()
+            runner.assert_not_called()
 
     def test_test_branch_pipeline_rebuilds_only_when_switching_runtime(self):
         with tempfile.TemporaryDirectory() as folder:
