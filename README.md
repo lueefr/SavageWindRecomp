@@ -6,7 +6,7 @@
 
 ## Download
 
-**[Download SavageWind-Portable-x86_64.AppImage](https://github.com/lueefr/SavageWindRecomp/releases/download/portable-preview/SavageWind-Portable-x86_64.AppImage)** · [Release notes](https://github.com/lueefr/SavageWindRecomp/releases/tag/portable-preview)
+**[Download SavageWind-Portable-x86_64.AppImage](https://github.com/lueefr/SavageWindRecomp/releases/latest/download/SavageWind-Portable-x86_64.AppImage)** · [Release notes](https://github.com/lueefr/SavageWindRecomp/releases/latest)
 
 On Linux x86-64:
 

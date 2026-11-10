@@ -4,7 +4,7 @@ This fork uses the **unmodified official** [Savage Wind Recomp](https://github.c
 
 ## Installation
 
-Download the [portable preview AppImage](https://github.com/lueefr/SavageWindRecomp/releases/download/portable-preview/SavageWind-Portable-x86_64.AppImage), put it in the directory where you want to keep the installation, make it executable, and run it.
+Download the [portable preview AppImage](https://github.com/lueefr/SavageWindRecomp/releases/latest/download/SavageWind-Portable-x86_64.AppImage), put it in the directory where you want to keep the installation, make it executable, and run it.
 
 On first launch, select your own extracted `exefs/` and `romfs/` directory, or use the NSP/XCI importer with your own base game, update and `prod.keys`. The installer verifies its inputs and checks temporary disk space before proceeding. Importing and compiling may take a long time.
 
