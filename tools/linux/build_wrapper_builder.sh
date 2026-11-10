@@ -17,9 +17,10 @@ mkdir -p "$OUTPUT/rootfs" "$OUTPUT/seed/build" "$OUTPUT/libs"
 git clone --depth 1 --branch test https://github.com/Revivedx/SavageWindRecomp.git "$SOURCE"
 git -C "$SOURCE" rev-parse HEAD > "$OUTPUT/upstream-commit"
 cp "$SOURCE/tools/linux/Containerfile" "$ROOT/Containerfile"
-# The Ubuntu security mirror may lag behind the package index during rolling updates.
-# Use the same archive mirror for all Jammy suites to prevent transient 404 packages.
-sed -i '/^FROM docker.io\/library\/ubuntu:22.04$/a RUN sed -i "s|http://security.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g" /etc/apt/sources.list \&\& rm -rf /var/lib/apt/lists/*' "$ROOT/Containerfile"
+# Pin Ubuntu packages to a consistent historical snapshot. Live Jammy indices may
+# still advertise removed versions (e.g. perl-base .10 when only .9 is published).
+# Ubuntu 22.04's apt supports the official snapshot service.
+sed -i '/^FROM docker.io\/library\/ubuntu:22.04$/a RUN sed -i "s|^deb |deb [snapshot=20261001T000000Z] |g" /etc/apt/sources.list \&\& rm -rf /var/lib/apt/lists/*' "$ROOT/Containerfile"
 cat >> "$ROOT/Containerfile" <<'DOCKER'
 # The launcher ships bubblewrap and a complete, preprepared source build toolchain.
 RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap \
