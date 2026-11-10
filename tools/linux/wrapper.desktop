@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Savage Wind Portable
+GenericName=Savage Wind Installer
+Comment=Portable Savage Wind installer and launcher
+Exec=AppRun
+Icon=savagewind-portable
+Categories=Game;
+Terminal=false
+StartupNotify=true

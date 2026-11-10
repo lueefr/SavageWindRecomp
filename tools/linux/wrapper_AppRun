@@ -1,0 +1,24 @@
+#!/bin/sh
+# Portable wrapper: never start upstream without configuring its writable data root.
+set -e
+HERE=$(dirname "$(readlink -f "$0")")
+SAVAGEWIND_WRAPPER_BINDIR="$HERE/usr/bin"
+# The same trusted CA bundle is used by the bundled Qt Python and host GTK Python.
+SAVAGEWIND_CA_BUNDLE="$HERE/usr/share/wrapper/ca-bundle.pem"
+export SAVAGEWIND_WRAPPER_BINDIR SAVAGEWIND_CA_BUNDLE
+DESKTOP=$(printf '%s' "$XDG_CURRENT_DESKTOP" | tr '[:upper:]' '[:lower:]')
+
+# GNOME uses GTK when its GObject bindings are present on the host.
+case "$DESKTOP" in
+    *gnome*|*xfce*|*mate*|*cinnamon*)
+        if command -v python3 >/dev/null 2>&1 &&
+           python3 -c 'import gi; gi.require_version("Gtk", "3.0"); from gi.repository import Gtk' >/dev/null 2>&1; then
+            PYTHONPATH="$HERE/usr/share:$PYTHONPATH"
+            export PYTHONPATH
+            exec python3 -m wrapper.launch "$@"
+        fi
+        ;;
+esac
+
+# KDE/Plasma, or fallback on desktops missing GTK Python bindings.
+exec "$HERE/usr/bin/swqt/swqt" "$@"

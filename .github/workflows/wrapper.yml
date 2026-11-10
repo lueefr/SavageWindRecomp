@@ -1,0 +1,95 @@
+name: Portable native launcher
+on:
+  push:
+    branches: [feat/portable-native-wrapper]
+  pull_request:
+    paths: ["wrapper/**", "tools/linux/build_wrapper.sh", "tools/linux/wrapper*", ".github/workflows/wrapper.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: portable-wrapper-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Syntax and unit tests
+        run: |
+          python -m compileall -q wrapper
+          python -m unittest discover -s wrapper/tests -v
+          python -m pip install cryptography==46.0.4
+          PYTHONPATH=tools/linux python tools/linux/test_import_game.py
+          sh -n tools/linux/wrapper_AppRun
+          bash -n tools/linux/build_wrapper.sh
+  appimage:
+    needs: tests
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git gcc make libmbedtls-dev patchelf libegl1 libgl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libxcb-xkb1 libxcb-shape0 libxcb-util1
+      - name: Install Qt/AppImage builder
+        run: python -m pip install PySide6==6.10.0 pyinstaller==6.22.3 cryptography==46.0.4 "certifi>=2025.1.31"
+      - name: Verify Qt never maps the installer during an unchanged launch
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest wrapper.tests.test_qt_visibility -v
+      - name: Build portable AppImage
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: bash tools/linux/build_wrapper.sh x86_64
+      - name: Check portable AppImage layout
+        run: |
+          cd build/dist
+          chmod +x SavageWind-Portable-x86_64.AppImage
+          ./SavageWind-Portable-x86_64.AppImage --appimage-extract >/dev/null
+          test -x squashfs-root/usr/bin/swqt/swqt
+          test -x squashfs-root/usr/bin/swextract
+          test -x squashfs-root/usr/bin/hactool
+          squashfs-root/usr/bin/swextract --help >/dev/null
+          test -s squashfs-root/usr/share/wrapper/ca-bundle.pem
+          SSL_CERT_FILE=/dev/null SSL_CERT_DIR=/nonexistent \
+          SAVAGEWIND_CA_BUNDLE="$PWD/squashfs-root/usr/share/wrapper/ca-bundle.pem" \
+          squashfs-root/usr/bin/swqt/swqt --tls-selftest
+          test -f squashfs-root/usr/share/wrapper/build_progress.py
+          test -f squashfs-root/usr/share/wrapper/core.py
+          test -f squashfs-root/usr/share/wrapper/rollback.py
+          test -f squashfs-root/usr/share/wrapper/migration.py
+          LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib" squashfs-root/usr/bin/hactool 2>&1 | head -10 || true
+      - name: Publish directly downloadable portable preview
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/portable-native-wrapper'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=portable-preview
+          asset=build/dist/SavageWind-Portable-x86_64.AppImage
+          printf '## Savage Wind Portable (Linux)\n\n' > /tmp/portable-notes.md
+          printf 'Native Qt/GTK portable wrapper. Build from commit %s.\n\n' "$GITHUB_SHA" >> /tmp/portable-notes.md
+          printf 'Bundled NSP/XCI importer; no game, keys or official game binary included.\n' >> /tmp/portable-notes.md
+          printf 'SHA-256: %s\n' "$(sha256sum "$asset" | cut -d' ' -f1)" >> /tmp/portable-notes.md
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$asset" --clobber
+            gh release edit "$tag" --title "Savage Wind Portable (Linux preview)" --notes-file /tmp/portable-notes.md --prerelease
+          else
+            gh release create "$tag" "$asset" --target "$GITHUB_SHA" --title "Savage Wind Portable (Linux preview)" --notes-file /tmp/portable-notes.md --prerelease
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SavageWind-Portable-x86_64
+          path: build/dist/SavageWind-Portable-x86_64.AppImage
+          if-no-files-found: error

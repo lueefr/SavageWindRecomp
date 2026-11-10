@@ -1,3 +1,11 @@
+
+### Wrapper portátil com interface nativa
+
+A branch experimental `feat/portable-native-wrapper` disponibiliza um wrapper
+independente, com interface Qt/GTK e dados mantidos junto ao seu próprio AppImage.
+Consulte [o guia do wrapper portátil](portable-wrapper.md) para instalação,
+importação NSP/XCI, migração de saves, progresso e atualizações.
+
 # Savage Wind on Linux (x86-64, aarch64)
 
 Status (inherited from LASRecomp): builds and runs on Vulkan on x86-64. aarch64 is **experimental**: cross-compiled, its start screen checked under emulation,

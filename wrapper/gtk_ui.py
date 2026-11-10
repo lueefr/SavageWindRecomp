@@ -1,0 +1,329 @@
+"""Native GTK setup/progress UI, respecting the GNOME/Adwaita theme."""
+import queue
+import threading
+from pathlib import Path
+
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, GLib
+
+from .core import Pipeline, Cancelled, valid_game
+from .migration import legacy_folder
+
+
+class Window(Gtk.Window):
+    def __init__(self, root):
+        super().__init__(title="Savage Wind — Instalador")
+        self.root = Path(root)
+        self.events = queue.Queue()
+        self.cancel_event = threading.Event()
+        self.running = False
+        self.progress_busy = True
+        self.set_default_size(680, 510)
+        self.set_border_width(18)
+        self.connect("delete-event", self.close_window)
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.add(page)
+        title = Gtk.Label()
+        title.set_markup('<span size="xx-large" weight="bold">Savage Wind</span>')
+        title.set_halign(Gtk.Align.START)
+        page.pack_start(title, False, False, 0)
+        sub = Gtk.Label(label="Instalação portátil · Savage Wind oficial")
+        sub.set_halign(Gtk.Align.START)
+        page.pack_start(sub, False, False, 0)
+
+        self.form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        form_title = Gtk.Label(label="Instalar os arquivos do jogo")
+        form_title.set_halign(Gtk.Align.START)
+        self.form.pack_start(form_title, False, False, 0)
+        instructions = Gtk.Label(label="Selecione a pasta dos seus arquivos extraídos, contendo exefs/ e romfs/.")
+        instructions.set_halign(Gtk.Align.START)
+        instructions.set_line_wrap(True)
+        self.form.pack_start(instructions, False, False, 0)
+        self.tabs = Gtk.Notebook()
+        extracted_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.source = Gtk.Entry()
+        self.source.set_placeholder_text("Pasta com exefs/ e romfs/")
+        row.pack_start(self.source, True, True, 0)
+        pick = Gtk.Button(label="Procurar...")
+        pick.connect("clicked", self.pick)
+        row.pack_start(pick, False, False, 0)
+        extracted_page.pack_start(row, False, False, 0)
+        self.tabs.append_page(extracted_page, Gtk.Label(label="Pasta extraída"))
+
+        packages_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        help_text = Gtk.Label(label="Jogo base NSP/XCI, atualização NSP e prod.keys:")
+        help_text.set_halign(Gtk.Align.START)
+        packages_page.pack_start(help_text, False, False, 0)
+        self.packages = {}
+        for name, title in (("base", "Jogo base"), ("update", "Atualização"), ("keys", "Chaves")):
+            label = Gtk.Label(label=title)
+            label.set_halign(Gtk.Align.START)
+            packages_page.pack_start(label, False, False, 0)
+            pkg_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            field = Gtk.Entry()
+            pkg_row.pack_start(field, True, True, 0)
+            browse = Gtk.Button(label="Procurar...")
+            browse.connect("clicked", self.pick_package, field, title)
+            pkg_row.pack_start(browse, False, False, 0)
+            packages_page.pack_start(pkg_row, False, False, 0)
+            self.packages[name] = field
+        self.tabs.append_page(packages_page, Gtk.Label(label="NSP / XCI"))
+        self.form.pack_start(self.tabs, False, False, 0)
+        dest = Gtk.Label(label=f"Destino: {self.root / 'root'}")
+        dest.set_halign(Gtk.Align.START)
+        dest.set_line_wrap(True)
+        self.form.pack_start(dest, False, False, 0)
+        note = Gtk.Label(label="Saves, configurações e caches ficam em game/ junto ao AppImage.")
+        note.set_halign(Gtk.Align.START)
+        self.form.pack_start(note, False, False, 0)
+        install = Gtk.Button(label="Instalar e jogar")
+        install.connect("clicked", self.install)
+        self.form.pack_start(install, False, False, 0)
+        page.pack_start(self.form, False, False, 0)
+
+        self.progress_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.stage = Gtk.Label(label="Preparando...")
+        self.stage.set_halign(Gtk.Align.START)
+        self.stage.set_line_wrap(True)
+        self.progress_box.pack_start(self.stage, False, False, 0)
+        self.step_names = ["Armazenamento", "Arquivos do jogo", "Atualizações", "Recompilação", "Iniciar jogo"]
+        self.step_labels = []
+        for name in self.step_names:
+            label = Gtk.Label(label="○  " + name)
+            label.set_halign(Gtk.Align.START)
+            self.step_labels.append(label)
+            self.progress_box.pack_start(label, False, False, 0)
+        self.bar = Gtk.ProgressBar()
+        self.progress_box.pack_start(self.bar, False, False, 0)
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.log_expander = Gtk.Expander(label="Mostrar log")
+        self.log_expander.connect("notify::expanded", lambda obj, _: obj.set_label(
+            "Ocultar log" if obj.get_expanded() else "Mostrar log"))
+        buttons.pack_start(self.log_expander, True, True, 0)
+        self.back_button = Gtk.Button(label="Voltar")
+        self.back_button.connect("clicked", self.back)
+        buttons.pack_start(self.back_button, False, False, 0)
+        self.cancel_button = Gtk.Button(label="Cancelar")
+        self.cancel_button.connect("clicked", self.abort)
+        buttons.pack_start(self.cancel_button, False, False, 0)
+        self.progress_box.pack_start(buttons, False, False, 0)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_min_content_height(170)
+        self.log = Gtk.TextView()
+        self.live_mark = None
+        self.log.set_editable(False)
+        self.log.set_cursor_visible(False)
+        self.log.set_monospace(True)
+        scroll.add(self.log)
+        self.log_expander.add(scroll)
+        page.pack_start(self.progress_box, True, True, 0)
+        self.progress_box.hide()
+        GLib.timeout_add(90, self.pump)
+
+    def reveal(self, message):
+        # The native progress window is mapped only when there is real work.
+        self.stage.set_text(message)
+        self.show_all()
+        self.form.hide()
+        self.back_button.hide()
+        self.log_expander.set_expanded(False)
+
+    def mark_step(self, step):
+        for i, name in enumerate(self.step_names):
+            mark = "✓" if i < step else "▶" if i == step else "○"
+            self.step_labels[i].set_text(mark + "  " + name)
+
+    def phase(self, message):
+        lower = message.lower()
+        if any(x in lower for x in ("recompil", "código nativo", "[gamebuild]", "linking")):
+            return 3
+        if any(x in lower for x in ("atualiza", "baixando", "versão", "oficial")):
+            return 2
+        if any(x in lower for x in ("copiando", "arquivo", "analisando", "importando",
+                                     "pacotes", "romfs", "exefs", "chaves")):
+            return 1
+        if "iniciando o savage wind" in lower:
+            return 4
+        if any(x in lower for x in ("armazenamento", "migrando", "migração")):
+            return 0
+        return None
+
+    def pick(self, *_):
+        dialog = Gtk.FileChooserDialog(title="Pasta com os arquivos do jogo", parent=self,
+             action=Gtk.FileChooserAction.SELECT_FOLDER,
+             buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                      Gtk.STOCK_OPEN, Gtk.ResponseType.OK))
+        if dialog.run() == Gtk.ResponseType.OK:
+            self.source.set_text(dialog.get_filename())
+        dialog.destroy()
+
+    def pick_package(self, _, field, title):
+        dialog = Gtk.FileChooserDialog(title=title, parent=self,
+            action=Gtk.FileChooserAction.OPEN,
+            buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                     Gtk.STOCK_OPEN, Gtk.ResponseType.OK))
+        if dialog.run() == Gtk.ResponseType.OK:
+            field.set_text(dialog.get_filename())
+        dialog.destroy()
+
+    def install(self, *_):
+        if self.tabs.get_current_page() == 0:
+            source = self.source.get_text().strip()
+            if not valid_game(source):
+                self.alert("A pasta precisa conter exefs/main, exefs/main.npdm e romfs/.")
+                return
+        else:
+            source = {name: entry.get_text().strip() for name, entry in self.packages.items()}
+            if any(not path or not Path(path).is_file() for path in source.values()):
+                self.alert("Selecione o NSP/XCI base, a atualização NSP e o arquivo prod.keys.")
+                return
+        self.start(source)
+
+    def append_log(self, message, live=False):
+        # Replace only the active progress block; preserve finished steps above it.
+        buf = self.log.get_buffer()
+        if live and self.live_mark is not None:
+            start = buf.get_iter_at_mark(self.live_mark)
+            buf.delete(start, buf.get_end_iter())
+            buf.insert(buf.get_end_iter(), message)
+            return
+        self.live_mark = None
+        if buf.get_char_count():
+            buf.insert(buf.get_end_iter(), "\n")
+        if live:
+            self.live_mark = buf.create_mark(None, buf.get_end_iter(), True)
+        buf.insert(buf.get_end_iter(), message)
+
+    def alert(self, message, question=False):
+        dialog = Gtk.MessageDialog(transient_for=self if self.get_visible() else None, modal=True,
+            message_type=Gtk.MessageType.QUESTION if question else Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.YES_NO if question else Gtk.ButtonsType.OK,
+            text=message)
+        result = dialog.run()
+        dialog.destroy()
+        return result == Gtk.ResponseType.YES
+
+    def abort(self, *_):
+        self.cancel_event.set()
+        self.cancel_button.set_sensitive(False)
+        self.stage.set_text("Cancelando a operação...")
+
+    def back(self, *_):
+        if self.running:
+            return
+        self.progress_box.hide()
+        self.form.show_all()
+
+    def close_window(self, *_):
+        if self.running:
+            self.abort()
+            return True
+        return False
+
+    def start(self, source):
+        if self.running:
+            return
+        self.running = True
+        self.cancel_event = threading.Event()
+        self.form.hide()
+        self.progress_box.show_all()
+        self.back_button.hide()
+        self.log_expander.set_expanded(False)
+        self.cancel_button.set_sensitive(True)
+        self.stage.set_text("Preparando...")
+        self.log.get_buffer().set_text("")
+        self.live_mark = None
+        self.mark_step(-1)
+        self.progress_busy = True
+        def emit(kind, message, fraction):
+            self.events.put(("event", kind, message, fraction))
+        def ask(message):
+            gate, answer = threading.Event(), []
+            self.events.put(("question", message, answer, gate))
+            while not gate.wait(0.1):
+                if self.cancel_event.is_set():
+                    raise Cancelled()
+            return bool(answer and answer[0])
+        def work():
+            try:
+                result = Pipeline(self.root, emit, ask, self.cancel_event).run(source)
+                self.events.put(("done", result))
+            except Cancelled:
+                self.events.put(("done", "cancelled"))
+            except Exception as error:
+                self.events.put(("error", str(error)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def pump(self):
+        for _ in range(90):
+            try:
+                event = self.events.get_nowait()
+            except queue.Empty:
+                break
+            if event[0] == "event":
+                _, kind, message, fraction = event
+                if kind == "reveal":
+                    self.reveal(message)
+                    continue
+                if kind == "log":
+                    self.append_log(message)
+                    continue
+                if kind == "live":
+                    self.append_log(message, live=True)
+                    self.stage.set_text(message.splitlines()[0])
+                else:
+                    self.stage.set_text(message)
+                if kind == "stage":
+                    step = self.phase(message)
+                    if step is not None:
+                        self.mark_step(step)
+                    self.append_log(message)
+                self.progress_busy = fraction is None
+                if fraction is None:
+                    self.bar.pulse()
+                else:
+                    self.bar.set_fraction(float(fraction) / 100)
+            elif event[0] == "question":
+                _, message, answer, gate = event
+                answer.append(self.alert(message, question=True))
+                gate.set()
+            elif event[0] == "done":
+                self.running = False
+                if event[1] == "launched":
+                    Gtk.main_quit()
+                elif event[1] == "setup":
+                    self.show_all()
+                    self.progress_box.hide()
+                    self.form.show_all()
+                else:
+                    self.reveal("Operação cancelada.")
+                    self.cancel_button.set_sensitive(False)
+                    self.back_button.show()
+            elif event[0] == "error":
+                self.running = False
+                self.cancel_button.set_sensitive(False)
+                self.stage.set_text("Não foi possível concluir.")
+                self.back_button.show()
+                self.append_log("ERRO: " + event[1])
+                self.reveal("Não foi possível concluir.")
+                self.alert(event[1])
+        if self.running and self.progress_busy:
+            self.bar.pulse()
+        return True
+
+
+def run(root, selftest=False, autoplay=True):
+    if selftest:
+        return 0
+    window = Window(root)
+    autostart = autoplay and (valid_game(Path(root) / "root") or (Path(root) / "extracted").is_dir() or legacy_folder(root) is not None)
+    if autostart:
+        # Never show an empty installer before checking the official release.
+        GLib.idle_add(lambda: window.start(None) or False)
+    else:
+        window.show_all()
+        window.progress_box.hide()
+    Gtk.main()
+    return 0
