@@ -30,7 +30,7 @@ docker run --rm --platform linux/amd64 \
     -v "$SOURCE:/src" -w /src "$IMAGE" \
     bash -c 'tools/linux/gen_helper.sh x86_64 && tools/linux/package.sh x86_64'
 
-for part in linux/src linux/x86_64/deps linux/x86_64/gen-venv zig; do
+for part in linux/src linux/x86_64/deps linux/x86_64/gen-venv zig zig-dl; do
     src="$SOURCE/build/$part"
     [ -d "$src" ] || { echo "Missing build cache: $part" >&2; exit 1; }
     mkdir -p "$OUTPUT/seed/build/$(dirname "$part")"
