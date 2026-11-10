@@ -974,6 +974,93 @@ class Pipeline:
         self.status("log", f"Jogo iniciado (PID {process.pid}).")
         return "launched"
 
+    def build_source_only(self):
+        """Build or select one source AppImage without touching game data or native code."""
+        root = self.root
+        state = read_state(root)
+        if self.prs == "test":
+            from .pr_build import build_test_appimage, test_runtime, upstream_test_head
+            installed = test_runtime(root, state)
+            rebuild = True
+            if installed and state.get("test_commit"):
+                try:
+                    head = upstream_test_head()
+                    rebuild = head != state["test_commit"]
+                    if not rebuild:
+                        self.status("log", f"Upstream test {head[:12]} has not changed; reusing the AppImage.")
+                except InstallError as error:
+                    if not self.ask(f"Could not check upstream test: {error}\n"
+                                    "Reuse the existing AppImage without checking for updates?"):
+                        return "setup"
+                    rebuild = False
+            if rebuild:
+                if not self.ask("Build an AppImage from upstream test? This only builds "
+                                "the executable; game files, swgame.so and saves remain untouched."):
+                    return "setup"
+                result = build_test_appimage(root, self.status, self.cancel, ask=self.ask)
+                installed = result["path"]
+                state.update({
+                    "runtime_source": "test", "test_digest": result["digest"],
+                    "test_commit": result["commit"], "test_size": result["size"],
+                    "test_mtime_ns": result["mtime_ns"],
+                })
+                write_state(root, state)
+            elif state.get("runtime_source") != "test":
+                raise InstallError("Cannot reuse a test AppImage that is not the selected runtime.")
+        elif isinstance(self.prs, list) and self.prs:
+            from .pr_build import build_pr_appimage, custom_runtime, selection_key
+            desired = selection_key(self.prs)
+            installed = custom_runtime(root, state)
+            if not installed or state.get("custom_selection") != desired:
+                if not self.ask("Compile an AppImage using the selected PRs? PR code may be "
+                                "unreviewed. Game code, files and saves will not be modified."):
+                    return "setup"
+                result = build_pr_appimage(root, self.prs, self.status, self.cancel, ask=self.ask)
+                installed = result["path"]
+                state.update({
+                    "runtime_source": "custom", "custom_digest": result["digest"],
+                    "custom_selection": result["selection"], "custom_size": result["size"],
+                    "custom_mtime_ns": result["mtime_ns"],
+                })
+                write_state(root, state)
+            else:
+                self.status("log", "Selected PRs are unchanged; reusing the AppImage.")
+        else:
+            raise InstallError("Select upstream test or at least one PR to build only an AppImage.")
+        self.status("source-finish", f"AppImage ready: {installed.name}", 100)
+        self.status("log", "Executable build complete. Native game code and saves are unchanged.")
+        return "built"
+
+    def select_native_runtime(self):
+        """Resolve the explicitly selected executable before recompiling game code."""
+        root = self.root
+        if self.prs == "test" or (isinstance(self.prs, list) and self.prs):
+            result = self.build_source_only()
+            if result != "built":
+                return None
+            return installed_runtime(root, read_state(root))
+        if self.prs == []:
+            state = read_state(root)
+            installed = local_release(root, state)
+            if not installed:
+                remote = fetch_latest()
+                if not remote:
+                    raise InstallError("An official AppImage is required but no release is available.")
+                if not self.ask("Download the official AppImage before explicitly recompiling "
+                                "the game's native code?"):
+                    return None
+                installed = (adopt_release(remote, root, self.status, self.cancel)
+                             or download_release(remote, root, self.status, self.cancel))
+                stat = installed.stat()
+                state.update({
+                    "official_digest": remote["digest"], "official_tag": remote["tag"],
+                    "official_size": stat.st_size, "official_mtime_ns": stat.st_mtime_ns,
+                })
+            state["runtime_source"] = "official"
+            write_state(root, state)
+            return installed
+        return installed_runtime(root, read_state(root))
+
     def run(self, source=None):
         # Prevent two GUI instances from replacing the same AppImage or extracted files.
         folder = self.root / ".sw-wrapper"
@@ -1001,6 +1088,8 @@ class Pipeline:
         if (root / ".sw-wrapper").is_symlink():
             raise InstallError("A pasta .sw-wrapper não pode ser um link simbólico.")
         (root / ".sw-wrapper").mkdir(exist_ok=True)
+        if self.mode == "build_only":
+            return self.build_source_only()
         self.status("stage", "Preparando o armazenamento portátil...")
         from .rollback import Rollback
         pending = Rollback(root)
@@ -1035,13 +1124,15 @@ class Pipeline:
         portable_env(root)
         state = read_state(root)
         if self.mode in ("play", "native"):
-            # Playing and recompiling the player's native library are explicit,
-            # independent operations. Neither compiles a new AppImage.
-            installed = installed_runtime(root, state)
-            if not installed:
-                raise InstallError("No installed AppImage is selected. Build an AppImage first.")
             if not valid_game(game_files(root)):
                 raise InstallError("No valid game files in root/. Import your own game files first.")
+            # Play never builds anything. Recompile may optionally select test/PR
+            # or official first, but only after the user's explicit request.
+            installed = (self.select_native_runtime() if self.mode == "native" else
+                         installed_runtime(root, state))
+            if installed is None:
+                return "setup"
+            state = read_state(root)
             if self.mode == "play":
                 if not compiled_code(root):
                     raise InstallError("No valid native game library in game/. "
@@ -1067,12 +1158,7 @@ class Pipeline:
             write_state(root, state)
             self.status("progress", "Native game code compiled. Use Play to launch.", 100)
             return "native-built"
-        build_only = self.mode == "build_only" or (
-            self.mode == "install" and self.prs is not None and (
-                self.prs == "test" or (isinstance(self.prs, list) and bool(self.prs))))
-        if build_only and not (self.prs == "test" or
-                               isinstance(self.prs, list) and bool(self.prs)):
-            raise InstallError("Select the upstream test branch or at least one PR to build an AppImage.")
+        build_only = False  # An explicit AppImage-only operation exits above.
         if source and valid_game(game_files(root)):
             raise InstallError("O jogo já está instalado nesta pasta. Seus arquivos não serão substituídos.")
         if not build_only and not valid_game(game_files(root)) and not source:
@@ -1176,13 +1262,6 @@ class Pipeline:
                         if rollback:
                             rollback.restore()
                         raise
-        if build_only:
-            if not installed:
-                raise InstallError("No AppImage was produced by the selected source build.")
-            self.status("source-finish", f"AppImage ready: {installed.name}", 100)
-            self.status("log", "AppImage-only operation completed; the game's native "
-                        "library, game files and saves were not changed.")
-            return "built"
         try:
             if not installed:
                 if release_error:
