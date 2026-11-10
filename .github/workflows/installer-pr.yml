@@ -30,3 +30,38 @@ jobs:
         run: python -m unittest discover -s wrapper/tests -v
       - name: Check build script syntax
         run: bash -n tools/linux/build_wrapper.sh
+
+  package:
+    name: Build portable AppImage preview (no release)
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install AppImage packaging dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git gcc make libmbedtls-dev patchelf libegl1 libgl1 libopengl0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libxcb-xkb1 libxcb-shape0 libxcb-util1
+      - name: Install Qt and extraction tooling
+        run: python -m pip install PySide6==6.10.0 pyinstaller==6.22.3 cryptography==46.0.4 "certifi>=2025.1.31"
+      - name: Build standalone launcher AppImage
+        run: bash tools/linux/build_wrapper.sh x86_64
+      - name: Inspect AppImage contents
+        run: |
+          cd build/dist
+          chmod +x SavageWind-Portable-x86_64.AppImage
+          ./SavageWind-Portable-x86_64.AppImage --appimage-extract >/dev/null
+          test -s squashfs-root/usr/share/wrapper/pr_build.py
+          test -s squashfs-root/usr/share/wrapper/i18n.py
+          test -x squashfs-root/usr/bin/swqt/swqt
+          squashfs-root/usr/bin/swqt/swqt --root "$PWD" --selftest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SavageWind-Portable-PR-preview
+          path: build/dist/SavageWind-Portable-x86_64.AppImage
+          if-no-files-found: error
