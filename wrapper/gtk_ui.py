@@ -164,6 +164,18 @@ class Window(Gtk.Window):
         self.label(self.install_button, "Install and play", "set_label")
         self.install_button.connect("clicked", self.install)
         actions.pack_start(self.install_button, True, True, 0)
+        self.play_button = Gtk.Button()
+        self.label(self.play_button, "Play existing game", "set_label")
+        self.play_button.connect("clicked", self.play_existing)
+        actions.pack_start(self.play_button, True, True, 0)
+        self.build_button = Gtk.Button()
+        self.label(self.build_button, "Build AppImage only", "set_label")
+        self.build_button.connect("clicked", self.build_image)
+        actions.pack_start(self.build_button, True, True, 0)
+        self.native_button = Gtk.Button()
+        self.label(self.native_button, "Recompile game code", "set_label")
+        self.native_button.connect("clicked", self.recompile_game)
+        actions.pack_start(self.native_button, True, True, 0)
         self.delete_button = Gtk.Button()
         self.label(self.delete_button, "Delete installation", "set_label")
         self.delete_button.connect("clicked", self.delete_installation)
@@ -177,7 +189,13 @@ class Window(Gtk.Window):
         self.stage.set_halign(Gtk.Align.START)
         self.stage.set_line_wrap(True)
         self.progress_box.pack_start(self.stage, False, False, 0)
+        self.eta = Gtk.Label(label="")
+        self.eta.set_halign(Gtk.Align.START)
+        self.progress_box.pack_start(self.eta, False, False, 0)
         self.step_names = ["Storage", "Game files", "Updates", "Recompilation", "Launch game"]
+        self.source_steps = ["Fetch sources", "Apply pull requests", "Prepare compiler",
+                             "Compile runtime", "Package AppImage", "Publish AppImage"]
+        self._source_mode = False
         self.step_labels = []
         for name in self.step_names:
             label = Gtk.Label()
@@ -235,7 +253,8 @@ class Window(Gtk.Window):
 
     def mark_step(self, step):
         self._step_current = step
-        for i, name in enumerate(self.step_names):
+        names = self.source_steps if self._source_mode else self.step_names
+        for i, name in enumerate(names):
             mark = "✓" if i < step else "▶" if i == step else "○"
             self.step_labels[i].set_text(mark + "  " + tr(name, self.language))
 
@@ -274,6 +293,11 @@ class Window(Gtk.Window):
     def game_status(self):
         state = read_state(self.root)
         existing = valid_game(self.root / "root") or valid_game(self.root / "extracted")
+        self.install_button.set_visible(not existing)
+        self.play_button.set_visible(existing)
+        self.play_button.set_sensitive(existing and compiled_code(self.root))
+        self.native_button.set_visible(existing)
+        self.build_button.set_visible(True)
         if existing:
             where = self.root / ("root" if valid_game(self.root / "root") else "extracted")
             self.source.set_text(str(where))
@@ -297,7 +321,7 @@ class Window(Gtk.Window):
     def delete_installation(self, *_):
         if self.running:
             return
-        warning = tr("This permanently removes root/, game/, all saves, and downloaded/built AppImages. The portable launcher remains.", self.language)
+        warning = tr("Delete extracted game files, compiled code and AppImages? Saves and settings are preserved.", self.language)
         if not self.alert(warning, question=True):
             return
         dialog = Gtk.Dialog(title=tr("Delete installation", self.language),
@@ -394,6 +418,38 @@ class Window(Gtk.Window):
                 return
         self.start(source)
 
+    def selected_source(self):
+        if self.test_branch.get_active():
+            return "test"
+        if self.custom.get_active():
+            selection = self.selected_prs()
+            if not selection:
+                self.alert(tr("Select at least one pull request.", self.language))
+                return None
+            return selection
+        return []
+
+    def build_image(self, *_):
+        selection = self.selected_source()
+        if selection is None:
+            return
+        if selection == []:
+            self.alert(tr("Select test or pull requests to compile an AppImage.", self.language))
+            return
+        self.start(None, mode="build_only", prs=selection)
+
+    def recompile_game(self, *_):
+        if not valid_game(self.root / "root"):
+            self.alert(tr("Please import game files before recompiling.", self.language))
+            return
+        selection = self.selected_source()
+        if selection is not None:
+            self.start("__reuse__", mode="native", prs=selection)
+
+    def play_existing(self, *_):
+        if valid_game(self.root / "root"):
+            self.start("__reuse__", mode="play", prs=None)
+
     def append_log(self, message, live=False):
         # Replace only the active progress block; preserve finished steps above it.
         buf = self.log.get_buffer()
@@ -439,7 +495,7 @@ class Window(Gtk.Window):
             return True
         return False
 
-    def start(self, source):
+    def start(self, source, mode="install", prs=None):
         if self.running:
             return
         self.running = True
@@ -452,7 +508,9 @@ class Window(Gtk.Window):
         self.stage.set_text(tr("Preparing...", self.language))
         self.log.get_buffer().set_text("")
         self.live_mark = None
+        self._source_mode = mode == "build_only"
         self.mark_step(-1)
+        self.eta.set_text("")
         self.progress_busy = True
         def emit(kind, message, fraction):
             self.events.put(("event", kind, message, fraction))
@@ -463,11 +521,12 @@ class Window(Gtk.Window):
                 if self.cancel_event.is_set():
                     raise Cancelled()
             return bool(answer and answer[0])
-        prs = ("test" if self.test_branch.get_active() else
-               self.selected_prs() if self.custom.get_active() else []) if self.prs_changed else None
+        if mode == "install":
+            prs = ("test" if self.test_branch.get_active() else
+                   self.selected_prs() if self.custom.get_active() else []) if self.prs_changed else None
         def work():
             try:
-                result = Pipeline(self.root, emit, ask, self.cancel_event, prs=prs).run(source)
+                result = Pipeline(self.root, emit, ask, self.cancel_event, prs=prs, mode=mode).run(source)
                 self.events.put(("done", result))
             except Cancelled:
                 self.events.put(("done", "cancelled"))
@@ -485,6 +544,24 @@ class Window(Gtk.Window):
                 _, kind, message, fraction = event
                 if kind == "reveal":
                     self.reveal(message)
+                    continue
+                if kind == "source-step":
+                    self._source_mode = True
+                    self.mark_step(int(fraction))
+                    self.stage.set_text(tr(message, self.language))
+                    self.progress_busy = True
+                    self.append_log(message)
+                    continue
+                if kind == "source-eta":
+                    self.eta.set_text(progress_text(message, self.language))
+                    continue
+                if kind == "source-finish":
+                    self._source_mode = True
+                    self.mark_step(len(self.source_steps))
+                    self.stage.set_text(tr(message, self.language))
+                    self.progress_busy = False
+                    self.bar.set_fraction(1.0)
+                    self.append_log(message)
                     continue
                 if kind == "log":
                     self.append_log(message)
@@ -532,6 +609,13 @@ class Window(Gtk.Window):
                 self.running = False
                 if event[1] == "launched":
                     Gtk.main_quit()
+                elif event[1] in ("built", "native-built"):
+                    self.cancel_button.set_sensitive(False)
+                    self.back_button.show()
+                    self.progress_busy = False
+                    self.bar.set_fraction(1.0)
+                    self.stage.set_text(tr("AppImage build completed." if event[1] == "built"
+                                           else "Game code recompilation completed.", self.language))
                 elif event[1] == "setup":
                     self.show_all()
                     self.progress_box.hide()
@@ -568,6 +652,7 @@ def run(root, selftest=False, autoplay=True):
         window.show_all()
         window.custom_toggled()
         window.test_toggled()
+        window.game_status()
         window.progress_box.hide()
     Gtk.main()
     return 0
