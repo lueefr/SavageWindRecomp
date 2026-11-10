@@ -212,10 +212,37 @@ def tun_ready(path="/dev/net/tun"):
         return True
 
 
+
+def kernel_module_issue(release=None, modules="/usr/lib/modules"):
+    """Detect the common kernel-upgraded-but-not-rebooted case before prompting for root."""
+    release = release or os.uname().release
+    path = Path(modules)
+    current = path / release
+    if current.is_dir():
+        return None
+    try:
+        available = sorted(item.name for item in path.iterdir() if item.is_dir())
+    except OSError:
+        available = []
+    installed = ", ".join(available[:8]) or "none"
+    return (f"The running kernel ({release}) has no matching modules directory: "
+            f"{current}. Installed module directories: {installed}. "
+            "On Arch-based systems this commonly happens after a kernel upgrade "
+            "without a reboot. Save your work, reboot into the installed kernel "
+            "and try again. If it persists, verify or reinstall the matching "
+            "kernel package and boot configuration; do not force-load modules "
+            "from another kernel version.")
+
+
 def ensure_tun(root, emit, ask, cancel):
     """Ask before loading a host kernel module needed by rootless pasta."""
     if tun_ready():
         return
+    issue = kernel_module_issue()
+    if issue:
+        # Installing modules for a different kernel or forcing modprobe cannot
+        # fix a running-kernel / installed-module version mismatch.
+        raise InstallError(issue)
     modprobe = shutil.which("modprobe")
     if not modprobe:
         raise InstallError("The /dev/net/tun device is unavailable and modprobe was not found. "
@@ -278,8 +305,11 @@ def ensure_tun(root, emit, ask, cancel):
         if code:
             emit("log", "TUN module loader: " + (result.stderr or result.stdout)[-900:], None)
     if code:
-        raise InstallError("The tun module could not be loaded. Check the matching kernel "
-                           "modules, security policy, or reboot after a kernel update.")
+        raise InstallError("The tun module could not be loaded for the running kernel "
+                           f"({os.uname().release}). Check the installed kernel modules "
+                           "and kernel configuration; do not load a module built for "
+                           "another kernel. Save your work and reboot first if the "
+                           "kernel was recently updated.")
     if not tun_ready():
         raise InstallError("The tun module command finished, but /dev/net/tun still does not "
                            "work. Rootless pasta cannot be used on this kernel.")
