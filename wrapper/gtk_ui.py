@@ -587,7 +587,7 @@ class Window(Gtk.Window):
                 else:
                     self.stage.set_text(message)
                 if kind == "stage":
-                    step = self.phase(message)
+                    step = None if self._source_mode else self.phase(message)
                     if step is not None:
                         self.mark_step(step)
                     self.append_log(message)
