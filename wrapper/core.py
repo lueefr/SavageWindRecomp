@@ -241,6 +241,9 @@ def installed_runtime(root, state):
     if state.get("runtime_source") == "custom":
         from .pr_build import custom_runtime
         return custom_runtime(root, state)
+    if state.get("runtime_source") == "test":
+        from .pr_build import test_runtime
+        return test_runtime(root, state)
     return local_release(root, state)
 
 
@@ -262,7 +265,7 @@ def reset_install(root, confirmation):
             raise InstallError("Close the game and other installers first.") from error
         targets = [root / name for name in (
             "root", "game", "extracted", "SavageWind-official.AppImage",
-            "SavageWind-custom.AppImage")]
+            "SavageWind-custom.AppImage", "SavageWind-test.AppImage")]
         targets += [metadata / name for name in ("state.json", "rollback")]
         for target in targets:
             if target.is_symlink():
@@ -833,7 +836,7 @@ class Pipeline:
     def __init__(self, root, emit, ask, cancel, prs=None):
         self.root = Path(root).resolve()
         self.emit, self.ask, self.cancel = emit, ask, cancel
-        self.prs = prs  # None: preserve runtime; []: official; list: custom PR build
+        self.prs = prs  # None: preserve runtime; []: official; "test": upstream test; list: PRs
         self._last_progress = 0.0
         self._last_log = 0.0
 
@@ -920,12 +923,32 @@ class Pipeline:
         # Check availability before copying many GiB of game files.
         if source and game_files(root).exists() and not valid_game(game_files(root)):
             raise InstallError("A pasta root/ já existe, mas está incompleta. Não será sobrescrita.")
-        # PRs are only built by explicit selection in the installer.
+        # Source builds are opt-in and do not replace the official executable.
         rollback = None
-        custom = state.get("runtime_source") == "custom" if self.prs is None else bool(self.prs)
+        current_source = state.get("runtime_source", "official")
+        test = current_source == "test" if self.prs is None else self.prs == "test"
+        custom = current_source == "custom" if self.prs is None else isinstance(self.prs, list) and bool(self.prs)
         installed = installed_runtime(root, state) if self.prs is None else None
         release_error = None
-        if custom:
+        if test:
+            from .pr_build import build_test_appimage, test_runtime
+            installed = test_runtime(root, state)
+            if self.prs == "test":
+                if not self.ask("Build the latest upstream test branch locally? "
+                                "This is development code that may be unstable. "
+                                "The official AppImage and your saves will be preserved."):
+                    return "setup"
+                result = build_test_appimage(root, self.status, self.cancel)
+                installed = result["path"]
+                state.update({
+                    "runtime_source": "test", "test_digest": result["digest"],
+                    "test_commit": result["commit"], "test_size": result["size"],
+                    "test_mtime_ns": result["mtime_ns"],
+                })
+                write_state(root, state)
+            if not installed:
+                return "setup"
+        elif custom:
             from .pr_build import build_pr_appimage, custom_runtime, selection_key
             desired = selection_key(self.prs) if self.prs else state.get("custom_selection")
             installed = custom_runtime(root, state)
@@ -992,9 +1015,10 @@ class Pipeline:
                 else:
                     return "setup"
             # A rebuild is mandatory only after changing the executable or importing new game files.
-            if not custom:
+            if not (custom or test):
                 recover_completed_code(root, installed, state, self.status)
-            active_digest = state.get("custom_digest") if custom else state.get("official_digest")
+            active_digest = (state.get("test_digest") if test else
+                             state.get("custom_digest") if custom else state.get("official_digest"))
             key = state.get("built_digest")
             target = cpu_target()
             cpu_changed = bool(state.get("built_cpu") and state["built_cpu"] != target)
