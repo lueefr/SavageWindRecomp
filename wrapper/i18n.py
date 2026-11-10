@@ -36,6 +36,7 @@ CATALOG = {
     "Runtime source": ("Origem do executável", "Источник исполняемого файла", "运行时来源"),
     "Official upstream AppImage": ("AppImage oficial", "Официальный AppImage", "官方 AppImage"),
     "Build from selected pull requests": ("Compilar a partir dos PRs selecionados", "Собрать из выбранных PR", "从选定的拉取请求构建"),
+    "Pull requests": ("Pull requests", "Пул-реквесты", "拉取请求"),
     "Open pull requests": ("Pull requests abertos", "Открытые PR", "开放的拉取请求"),
     "Refresh pull requests": ("Atualizar pull requests", "Обновить PR", "刷新拉取请求"),
     "Choose one or more PRs; each contains third-party code and may conflict. Requires git and Podman.": ("Escolha um ou mais PRs; eles podem ter código de terceiros e entrar em conflito. Requer git e Podman.", "Выберите один или несколько PR; они могут конфликтовать и содержат сторонний код. Требуются git и Podman.", "选择一个或多个 PR；可能包含第三方代码并产生冲突。需要 git 和 Podman。"),
