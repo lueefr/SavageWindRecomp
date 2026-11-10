@@ -143,7 +143,8 @@ class Window(QWidget):
         runtime_fields.addWidget(self.pr_list)
         self.custom.toggled.connect(self.custom_toggled)
         self.custom_toggled(self.current_custom)
-        fields.addWidget(self.runtime_box)
+        self.tabs.addTab(self.runtime_box, "")
+        self.tab_labels.append((self.runtime_box, "Pull requests"))
 
         actions = QHBoxLayout()
         self.install = QPushButton()
@@ -346,7 +347,7 @@ class Window(QWidget):
         if valid_game(self.root / "root") or valid_game(self.root / "extracted"):
             self.start("__reuse__")
             return
-        if self.tabs.currentIndex() == 0:
+        if self.tabs.currentIndex() != 1:
             folder = self.source.text().strip()
             if not folder:
                 QMessageBox.warning(self, tr("Select a folder", self.language), tr("Please select a folder containing exefs/ and romfs/.", self.language))
