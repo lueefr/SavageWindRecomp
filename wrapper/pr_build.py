@@ -16,7 +16,7 @@ import urllib.request
 
 from .deps import ensure_tools, ensure_tun, host_environment
 
-from .core import Cancelled, InstallError, check_cancel, sha256, stop_process, tls_context
+from .core import Cancelled, InstallError, check_cancel, read_state, sha256, stop_process, tls_context
 
 UPSTREAM = "https://github.com/Revivedx/SavageWindRecomp.git"
 API = "https://api.github.com/repos/Revivedx/SavageWindRecomp/pulls"
@@ -289,6 +289,48 @@ def _cleanup_stage(stage, emit):
         emit("log", "Temporary checkout cleaned through rootless Podman.", None)
 
 
+def _recover_test_build(root, emit, ask, cancel):
+    """Offer to adopt a completed AppImage left by an interrupted cleanup."""
+    image = root / "SavageWind-test.AppImage"
+    log = root / ".sw-wrapper/test-build.log"
+    if (image.is_symlink() or log.is_symlink() or
+            not image.is_file() or not log.is_file()):
+        return None
+    state = read_state(root)
+    if test_runtime(root, state):
+        return None
+    try:
+        stat = image.stat()
+        log_stat = log.stat()
+        if stat.st_size < 1024 * 1024 or stat.st_mtime_ns < log_stat.st_mtime_ns:
+            return None
+        with image.open("rb") as stream:
+            if stream.read(4) != b"\x7fELF":
+                return None
+        with log.open("rb") as stream:
+            head = stream.read(256 * 1024)
+            stream.seek(max(0, log_stat.st_size - 256 * 1024))
+            tail = stream.read()
+    except OSError:
+        return None
+    revisions = re.findall(rb"(?m)^Source revision: ([0-9a-f]{40})\s*$", head)
+    if not revisions or not re.search(rb"(?m)^Success\s*$", tail):
+        return None
+    revision = revisions[-1].decode("ascii")
+    if not ask("An AppImage from the previous test-branch build appears complete, "
+               f"but the installer failed during temporary file cleanup.\n\n"
+               f"Commit: {revision[:12]}\n"
+               f"File: {image}\n\n"
+               "Reuse and register this existing AppImage instead of compiling it "
+               "again? Choose No to fetch and build the latest upstream test branch."):
+        return None
+    digest = sha256(image, cancel)
+    emit("log", f"Recovered a previously packaged test AppImage for {revision}.", None)
+    return {"path": image, "digest": digest, "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns, "commit": revision,
+            "selection": f"test:{revision}"}
+
+
 def build_pr_appimage(root, prs, emit, cancel, ask=None):
     """Compile upstream test with selected pinned PRs in rootless Podman."""
     return build_upstream_appimage(root, emit, cancel, ask=ask, prs=validated(prs))
@@ -309,6 +351,10 @@ def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
         # Unit tests and programmatic callers must not silently install packages.
         def ask(_):
             return False
+    if prs is None:
+        recovered = _recover_test_build(root, emit, ask, cancel)
+        if recovered is not None:
+            return recovered
     ensure_tools(root, emit, ask, cancel)
     _podman_ready()
     # Podman 6 has removed slirp4netns; pasta requires a working host TUN device.
