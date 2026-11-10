@@ -141,9 +141,15 @@ class HiddenLauncherTests(unittest.TestCase):
             try:
                 self.assertEqual(window.language, "en")
                 self.assertEqual(window.form.title(), "Game files")
+                self.assertEqual(
+                    [window.tabs.tabText(i) for i in range(window.tabs.count())],
+                    ["Extracted folder", "NSP / XCI", "Source builds"])
                 index = window.language_box.findData("pt-BR")
                 window.language_box.setCurrentIndex(index)
                 self.assertEqual(window.form.title(), "Arquivos do jogo")
+                self.assertEqual(
+                    [window.tabs.tabText(i) for i in range(window.tabs.count())],
+                    ["Pasta extraída", "NSP / XCI", "Compilações locais"])
                 self.assertEqual(get_language(root), "pt-BR")
             finally:
                 window.close()
