@@ -414,6 +414,8 @@ class Window(Gtk.Window):
             message_type=Gtk.MessageType.QUESTION if question else Gtk.MessageType.ERROR,
             buttons=Gtk.ButtonsType.YES_NO if question else Gtk.ButtonsType.OK,
             text=message)
+        if question:
+            dialog.set_default_response(Gtk.ResponseType.NO)
         result = dialog.run()
         dialog.destroy()
         return result == Gtk.ResponseType.YES
