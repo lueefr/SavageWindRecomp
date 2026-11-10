@@ -3,6 +3,9 @@
 set -e
 HERE=$(dirname "$(readlink -f "$0")")
 SAVAGEWIND_WRAPPER_BINDIR="$HERE/usr/bin"
+SAVAGEWIND_BUILDER_ROOT="$HERE/usr/share/savagewind-builder"
+SAVAGEWIND_BWRAP="$HERE/usr/bin/bwrap"
+export SAVAGEWIND_BUILDER_ROOT SAVAGEWIND_BWRAP
 # The same trusted CA bundle is used by the bundled Qt Python and host GTK Python.
 SAVAGEWIND_CA_BUNDLE="$HERE/usr/share/wrapper/ca-bundle.pem"
 export SAVAGEWIND_WRAPPER_BINDIR SAVAGEWIND_CA_BUNDLE
