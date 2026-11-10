@@ -72,8 +72,12 @@ jobs:
           test -x squashfs-root/usr/share/savagewind-builder/seed/build/zig/zig
           test -s squashfs-root/usr/share/savagewind-builder/upstream-commit
 
-      - name: Smoke test bundled Clang in offline user namespace
+      - name: Smoke test embedded compiler in CI-compatible sandbox
         run: |
+          # The GitHub-hosted runner blocks CAP_NET_ADMIN and bubblewrap's
+          # --unshare-net loopback initialization (RTM_NEWADDR EPERM).
+          # This executes ONLY bundled tool version commands with the CI
+          # network namespace shared; player builds still require --unshare-net.
           cd build/dist
           mkdir -p test-source
           export SAVAGEWIND_BUILDER_ROOT="$PWD/squashfs-root/usr/share/savagewind-builder"
@@ -83,13 +87,23 @@ jobs:
           from pathlib import Path
           from wrapper.pr_build import bundled_builder, sandbox_command
           rootfs, _, runner = bundled_builder()
-          command = sandbox_command(rootfs, runner, Path.cwd() / "test-source",
-                                    ["clang", "--version"])
-          result = subprocess.run(command, capture_output=True, text=True, timeout=30)
-          print(result.stdout)
-          print(result.stderr)
-          assert result.returncode == 0, "Embedded offline compiler cannot start"
-          assert "clang version 21" in result.stdout
+          source = Path.cwd() / "test-source"
+          assert "--unshare-net" in sandbox_command(rootfs, runner, source,
+                                                     ["clang", "--version"])
+          for command_name, version_arg, expected in (
+              ("clang", "--version", "clang version 21"),
+              ("git", "--version", "git version"),
+          ):
+              # Only the CI smoke test shares the runner's network namespace.
+              # No untrusted source or build scripts execute in this step.
+              command = sandbox_command(rootfs, runner, source,
+                                        [command_name, version_arg], network=True)
+              assert "--unshare-net" not in command
+              result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+              print(result.stdout)
+              print(result.stderr)
+              assert result.returncode == 0, f"Bundled {command_name} cannot start"
+              assert expected in result.stdout
           PY
 
           squashfs-root/usr/bin/swqt/swqt --root "$PWD" --selftest
