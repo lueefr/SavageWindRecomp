@@ -146,7 +146,7 @@ class Window(QWidget):
         self.custom.setChecked(self.current_custom)
         runtime_fields.addWidget(self.custom)
         self.pr_intro = QLabel()
-        self.label(self.pr_intro, "Select PRs to merge with upstream test. The build tools are included in this AppImage.")
+        self.label(self.pr_intro, "Select PRs to merge with upstream test. Missing build tools can be installed with your permission.")
         self.pr_intro.setWordWrap(True)
         runtime_fields.addWidget(self.pr_intro)
         self.pr_refresh = QPushButton()
