@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: portable-installer-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Python syntax, native UI and portable tests
@@ -67,6 +71,27 @@ jobs:
           test -x squashfs-root/usr/share/savagewind-builder/rootfs/usr/bin/git
           test -x squashfs-root/usr/share/savagewind-builder/seed/build/zig/zig
           test -s squashfs-root/usr/share/savagewind-builder/upstream-commit
+
+      - name: Smoke test bundled Clang in offline user namespace
+        run: |
+          cd build/dist
+          mkdir -p test-source
+          export SAVAGEWIND_BUILDER_ROOT="$PWD/squashfs-root/usr/share/savagewind-builder"
+          export SAVAGEWIND_BWRAP="$PWD/squashfs-root/usr/bin/bwrap"
+          PYTHONPATH="$PWD/squashfs-root/usr/share" python - <<'PY'
+          import subprocess
+          from pathlib import Path
+          from wrapper.pr_build import bundled_builder, sandbox_command
+          rootfs, _, runner = bundled_builder()
+          command = sandbox_command(rootfs, runner, Path.cwd() / "test-source",
+                                    ["clang", "--version"])
+          result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+          print(result.stdout)
+          print(result.stderr)
+          assert result.returncode == 0, "Embedded offline compiler cannot start"
+          assert "clang version 21" in result.stdout
+          PY
+
           squashfs-root/usr/bin/swqt/swqt --root "$PWD" --selftest
       - uses: actions/upload-artifact@v4
         with:
