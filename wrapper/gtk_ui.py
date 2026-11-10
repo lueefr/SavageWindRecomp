@@ -29,6 +29,7 @@ class Window(Gtk.Window):
         self.prs_changed = False
         self.source_tab = 0
         self.current_custom = read_state(self.root).get("runtime_source") == "custom"
+        self.current_test = read_state(self.root).get("runtime_source") == "test"
         self.set_title(tr("Savage Wind — Installer", self.language))
         self.set_default_size(740, 670)
         self.set_border_width(18)
@@ -122,6 +123,16 @@ class Window(Gtk.Window):
         self.label(runtime_header, "Runtime source")
         runtime_header.set_halign(Gtk.Align.START)
         runtime_box.pack_start(runtime_header, False, False, 0)
+        self.test_branch = Gtk.CheckButton()
+        self.label(self.test_branch, "Build upstream test branch (no PRs)", "set_label")
+        self.test_branch.set_active(self.current_test)
+        self.test_branch.connect("toggled", self.test_toggled)
+        runtime_box.pack_start(self.test_branch, False, False, 0)
+        self.test_info = Gtk.Label()
+        self.label(self.test_info, "Compiles the latest upstream test commit locally; no pull requests are applied.")
+        self.test_info.set_line_wrap(True)
+        self.test_info.set_halign(Gtk.Align.START)
+        runtime_box.pack_start(self.test_info, False, False, 0)
         self.custom = Gtk.CheckButton()
         self.label(self.custom, "Build from selected pull requests", "set_label")
         self.custom.set_active(self.current_custom)
@@ -142,7 +153,7 @@ class Window(Gtk.Window):
         self.pr_scroll.add(self.pr_list)
         runtime_box.pack_start(self.pr_scroll, False, False, 0)
         self.tabs.append_page(runtime_box, Gtk.Label())
-        self.tab_labels.append((runtime_box, "Pull requests"))
+        self.tab_labels.append((runtime_box, "Source builds"))
         actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.install_button = Gtk.Button()
         self.label(self.install_button, "Install and play", "set_label")
@@ -199,6 +210,7 @@ class Window(Gtk.Window):
         self.progress_box.hide()
         self.game_status()
         self.custom_toggled()
+        self.test_toggled()
         GLib.timeout_add(90, self.pump)
 
     def label(self, widget, source, method="set_text"):
@@ -222,8 +234,16 @@ class Window(Gtk.Window):
             mark = "✓" if i < step else "▶" if i == step else "○"
             self.step_labels[i].set_text(mark + "  " + tr(name, self.language))
 
+    def test_toggled(self, *_):
+        active = self.test_branch.get_active()
+        if active:
+            self.custom.set_active(False)
+        self.test_info.set_visible(active)
+
     def custom_toggled(self, *_):
         enabled = self.custom.get_active()
+        if enabled:
+            self.test_branch.set_active(False)
         for widget in (self.pr_intro, self.pr_refresh, self.pr_scroll):
             widget.set_visible(enabled)
 
@@ -267,7 +287,7 @@ class Window(Gtk.Window):
             tr("AppImage detected." if installed_runtime(self.root, state)
                else "AppImage missing — setup required.", self.language))
         self.delete_button.set_sensitive(any((self.root / p).exists() for p in
-            ("root", "game", "extracted", "SavageWind-official.AppImage", "SavageWind-custom.AppImage")))
+            ("root", "game", "extracted", "SavageWind-official.AppImage", "SavageWind-custom.AppImage", "SavageWind-test.AppImage")))
 
     def delete_installation(self, *_):
         if self.running:
@@ -295,7 +315,9 @@ class Window(Gtk.Window):
             return
         self.source.set_text("")
         self.current_custom = False
+        self.current_test = False
         self.custom.set_active(False)
+        self.test_branch.set_active(False)
         self.pr_checks = []
         for child in self.pr_list.get_children():
             self.pr_list.remove(child)
@@ -346,11 +368,11 @@ class Window(Gtk.Window):
         dialog.destroy()
 
     def install(self, *_):
-        self.prs_changed = bool(self.custom.get_active() and self.selected_prs())
+        self.prs_changed = self.test_branch.get_active() or bool(self.custom.get_active() and self.selected_prs())
         if self.custom.get_active() and not self.prs_changed and not self.current_custom:
             self.alert(tr("Select at least one pull request.", self.language))
             return
-        if not self.custom.get_active():
+        if not self.custom.get_active() and not self.test_branch.get_active():
             self.prs_changed = True
         if valid_game(self.root / "root") or valid_game(self.root / "extracted"):
             self.start("__reuse__")
@@ -433,7 +455,8 @@ class Window(Gtk.Window):
                 if self.cancel_event.is_set():
                     raise Cancelled()
             return bool(answer and answer[0])
-        prs = (self.selected_prs() if self.custom.get_active() else []) if self.prs_changed else None
+        prs = ("test" if self.test_branch.get_active() else
+               self.selected_prs() if self.custom.get_active() else []) if self.prs_changed else None
         def work():
             try:
                 result = Pipeline(self.root, emit, ask, self.cancel_event, prs=prs).run(source)
@@ -535,6 +558,7 @@ def run(root, selftest=False, autoplay=True):
     else:
         window.show_all()
         window.custom_toggled()
+        window.test_toggled()
         window.progress_box.hide()
     Gtk.main()
     return 0
