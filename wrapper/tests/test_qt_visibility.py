@@ -26,10 +26,27 @@ class HiddenLauncherTests(unittest.TestCase):
         (game / "exefs/main").write_bytes(b"NSO0")
         (game / "exefs/main.npdm").write_bytes(b"META")
 
-    def test_installed_game_does_not_map_window_on_launch(self):
+    def test_installed_game_without_appimage_shows_setup(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             self.installed(root)
+            QTimer.singleShot(0, self.app.quit)
+            with mock.patch.object(qt_ui.Window, "start", autospec=True):
+                with mock.patch.object(qt_ui.Window, "show", autospec=True) as show:
+                    result = qt_ui.run(root, autoplay=True)
+            self.assertEqual(result, 0)
+            show.assert_called_once()
+
+    def test_installed_game_with_verified_appimage_stays_hidden(self):
+        from wrapper.core import write_state
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.installed(root)
+            binary = root / "SavageWind-official.AppImage"
+            binary.write_bytes(b"\x7fELF" + b"x" * 1024)
+            stat = binary.stat()
+            write_state(root, {"official_digest": "a" * 64, "official_size": stat.st_size,
+                               "official_mtime_ns": stat.st_mtime_ns})
             QTimer.singleShot(0, self.app.quit)
             with mock.patch.object(qt_ui.Window, "start", autospec=True):
                 with mock.patch.object(qt_ui.Window, "show", autospec=True) as show:
