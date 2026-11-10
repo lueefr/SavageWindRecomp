@@ -1,5 +1,6 @@
 """Portable Savage Wind launcher engine. No game data, keys or third-party runtime are shipped."""
 import errno
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
@@ -491,10 +492,77 @@ def stop_process(proc):
         pass
 
 
+def recover_code_stage(root, emit=None):
+    """Restore the original portable game directory after an interrupted setup."""
+    root = Path(root)
+    marker = root / ".sw-wrapper/code-stage"
+    if marker.is_symlink():
+        raise InstallError("The native-code staging marker cannot be a symbolic link.")
+    if not marker.exists():
+        return False
+    if marker.read_text(encoding="ascii", errors="replace").strip() != "game/extracted":
+        raise InstallError("Unknown native-code staging state; game files were left untouched.")
+    source = game_files(root)
+    temporary = game_data(root) / "extracted"
+    if source.is_symlink() or temporary.is_symlink():
+        raise InstallError("The native-code staging folders cannot be symbolic links.")
+    if not source.exists() and temporary.is_dir():
+        os.replace(temporary, source)
+        if emit:
+            emit("log", "Recovered root/ after an interrupted native-code build.", None)
+    elif source.is_dir() and not temporary.exists():
+        pass
+    else:
+        raise InstallError(
+            "Native-code setup is incomplete: root/ and game/extracted/ have "
+            "an unexpected state. No game files were deleted.")
+    marker.unlink()
+    return True
+
+
+@contextmanager
+def stage_native_code(root):
+    """Make the upstream-required data-root/extracted layout without copying RomFS.
+
+    The launcher retains root/ as its public storage layout and game/ for saves.
+    This is a same-filesystem rename under the installation operation lock.
+    """
+    root = Path(root)
+    origin = game_files(root)
+    temporary = game_data(root) / "extracted"
+    marker = root / ".sw-wrapper/code-stage"
+    if not valid_game(origin):
+        raise InstallError("Native-code staging requires a complete root/ game folder.")
+    if origin.is_symlink() or temporary.exists() or temporary.is_symlink() or marker.exists():
+        raise InstallError(
+            "Cannot stage game files: root/, game/extracted/ or the staging "
+            "marker is already occupied. Nothing was overwritten.")
+    game_data(root).mkdir(parents=True, exist_ok=True)
+    with marker.open("x", encoding="ascii") as file:
+        file.write("game/extracted\n")
+        file.flush()
+        os.fsync(file.fileno())
+    try:
+        os.replace(origin, temporary)
+    except BaseException:
+        marker.unlink()
+        raise
+    try:
+        yield temporary
+    finally:
+        # If an earlier cleanup failed, never overwrite either source folder.
+        recover_code_stage(root)
+
+
 def compiled_code(root, staging=False):
     # The official compiler writes next to exefs/romfs. After success we keep
     # the native library inside game/ and pass its path to the official loader.
     location = game_files(root) if staging else game_data(root)
+    return compiled_pair(location)
+
+
+def compiled_pair(location):
+    location = Path(location)
     lib = location / "swgame.so"
     identity = location / "swgame.so.id"
     if lib.is_symlink() or identity.is_symlink():
@@ -575,6 +643,20 @@ def publish_code(root):
 
 
 def build_game(root, binary, emit, cancel):
+    # New upstream runtime requires <data root>/extracted as a real directory.
+    # Only locally built test/PR AppImages need the staging layout.
+    source = read_state(root).get("runtime_source")
+    if source in ("test", "custom"):
+        with stage_native_code(root) as staged:
+            _run_game_build(root, binary, emit, cancel, staged)
+    else:
+        _run_game_build(root, binary, emit, cancel, game_files(root))
+    publish_code(root)
+    emit("log", "Native code moved into game/swgame.so.", None)
+    emit("progress", "Native code validated. Launching the game...", 100)
+
+
+def _run_game_build(root, binary, emit, cancel, source):
     emit("stage", "Preparando o código nativo do jogo...", None)
     emit("log", "O compilador oficial será executado. Esta etapa pode consumir CPU e RAM.", None)
     env = portable_env(root)
@@ -586,7 +668,7 @@ def build_game(root, binary, emit, cancel):
     # message or a failure after linking, but never override explicit NOT READY.
     with open(log_path, "w", encoding="utf-8") as logfile:
         build_started_ns = time.time_ns()
-        proc = subprocess.Popen([str(binary), str(game_files(root))],
+        proc = subprocess.Popen([str(binary), str(source)],
                                 cwd=root, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, start_new_session=True, bufsize=0)
         # Nice the compiler process without a preexec_fn (unsafe in a threaded Qt/GTK host).
@@ -596,7 +678,7 @@ def build_game(root, binary, emit, cancel):
             pass
         output, ready, not_ready, compiled, entered_game = bytearray(), False, False, False, False
         started = time.monotonic()
-        monitor = BuildMonitor(root, started=started)
+        monitor = BuildMonitor(root, started=started, game_dir=source)
         last_heartbeat, last_log = started, started
         with selectors.DefaultSelector() as sel:
             sel.register(proc.stdout, selectors.EVENT_READ)
@@ -644,7 +726,7 @@ def build_game(root, binary, emit, cancel):
                     # exiting the test hook. Detect this and relaunch through
                     # the portable path rather than waiting until the 1h timeout.
                     if entered_game:
-                        if compiled_code(root, staging=True):
+                        if compiled_pair(source):
                             logfile.write("[wrapper] O executável oficial iniciou o jogo durante a preparação. "
                                           "Reiniciando pelo fluxo portátil.\n")
                             emit("log", "O executável oficial entrou no jogo. Reiniciando pelo portable...", None)
@@ -662,7 +744,7 @@ def build_game(root, binary, emit, cancel):
         proc.wait()
         if output:
             logfile.write(output.decode("utf-8", errors="replace"))
-        artifact_ok = compiled_code(root, staging=True)
+        artifact_ok = compiled_pair(source)
         # Silent upstream runs may write logs into their own data folder.
         # A zero exit plus a newly written native pair is a stronger signal
         # than the absence of READY/done text from the captured pipe.
@@ -670,7 +752,7 @@ def build_game(root, binary, emit, cancel):
         if artifact_ok:
             try:
                 newly_built = all(
-                    (game_files(root) / name).stat().st_mtime_ns >= build_started_ns - 1_000_000_000
+                    (source / name).stat().st_mtime_ns >= build_started_ns - 1_000_000_000
                     for name in ("swgame.so", "swgame.so.id"))
             except OSError:
                 pass
@@ -701,9 +783,7 @@ def build_game(root, binary, emit, cancel):
     if not ready:
         emit("log", "Compilação recuperada: o código nativo foi concluído, "
                     "embora o upstream não tenha retornado a confirmação READY.", None)
-    publish_code(root)
-    emit("log", "Biblioteca recompilada movida para game/swgame.so.", None)
-    emit("progress", "Código nativo validado. Iniciando o jogo...", 100)
+    return
 
 
 
@@ -891,6 +971,9 @@ class Pipeline:
             self.status("reveal", "Recuperando uma atualização interrompida...")
             self.status("stage", "Recuperando uma atualização interrompida...")
             pending.restore()
+        # A power loss during a test/PR native-code build can leave root/ in
+        # game/extracted/. Restore it before checking the portable installation.
+        recover_code_stage(root, self.status)
         from .migration import legacy_folder, move_data, organize_portable
         organize_portable(root, self.status, self.cancel)
         state = read_state(root)
