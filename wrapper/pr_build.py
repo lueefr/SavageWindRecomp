@@ -14,6 +14,8 @@ import subprocess
 import tempfile
 import urllib.request
 
+from .deps import ensure_tools, host_environment
+
 from .core import Cancelled, InstallError, check_cancel, sha256, stop_process, tls_context
 
 UPSTREAM = "https://github.com/Revivedx/SavageWindRecomp.git"
@@ -110,63 +112,17 @@ def test_runtime(root, state):
     return path
 
 
-def bundled_builder():
-    """Use only the toolchain shipped in the current portable AppImage."""
-    folder = Path(os.environ.get("SAVAGEWIND_BUILDER_ROOT", "/nonexistent"))
-    runner = Path(os.environ.get("SAVAGEWIND_BWRAP", "/nonexistent"))
-    rootfs = folder / "rootfs"
-    seed = folder / "seed"
-    if not (rootfs / "bin/bash").exists() or not (rootfs / "usr/bin/git").exists():
-        raise InstallError("This AppImage does not contain the embedded source-build toolchain. "
-                           "Download the full portable AppImage preview, not the old lightweight build.")
-    if not (seed / "build/zig/zig").is_file() or not (seed / "build/linux/x86_64/deps").is_dir():
-        raise InstallError("The embedded compiler cache is incomplete; use a verified AppImage.")
-    if not runner.is_file() or runner.is_symlink() or not os.access(runner, os.X_OK):
-        raise InstallError("The embedded Linux build runner is missing or is not executable.")
-    return rootfs, seed, runner
-
-
-def sandbox_command(rootfs, runner, source, args, network=False):
-    """Bind only a disposable checkout; never mount saves or game data."""
-    command = [str(runner), "--die-with-parent", "--unshare-user", "--unshare-pid",
-               "--unshare-ipc", "--unshare-uts",
-               "--ro-bind", str(rootfs), "/", "--bind", str(source), "/src",
-               "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
-               "--chdir", "/src", "--setenv", "HOME", "/tmp",
-               "--setenv", "GIT_TERMINAL_PROMPT", "0",
-               "--setenv", "GIT_CONFIG_NOSYSTEM", "1",
-               "--setenv", "GIT_CONFIG_GLOBAL", "/dev/null",
-               "--setenv", "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
-    if network:
-        resolver = Path("/etc/resolv.conf").resolve()
-        if resolver.is_file():
-            command.extend(["--ro-bind", str(resolver), "/etc/resolv.conf"])
-    else:
-        # Build scripts, including untrusted PR code, cannot access the network.
-        command.append("--unshare-net")
-    command.extend(["--", *args])
-    return command
-
-
-def _host_env():
-    """Strip paths inherited from the launcher AppImage before invoking bwrap."""
-    environment = dict(os.environ)
-    for name in ("LD_LIBRARY_PATH", "LD_PRELOAD", "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH",
-                 "PYTHONPATH", "PYTHONHOME", "APPIMAGE", "APPDIR", "OWD", "LD_AUDIT"):
-        environment.pop(name, None)
-    return environment
-
-
 def _run(argv, cwd, emit, cancel, logfile):
+    """Stream build output without executing build scripts on the host."""
     check_cancel(cancel)
-    # Show the sandboxed command without leaking the host's temporary paths.
-    emit("stage", "Executing source-build task...", None)
+    emit("stage", "Running: " + " ".join(argv[:4]) + "...", None)
     try:
         process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, start_new_session=True,
-                                   stdin=subprocess.DEVNULL, bufsize=0, env=_host_env())
+                                   stdin=subprocess.DEVNULL, bufsize=0,
+                                   env=host_environment())
     except OSError as error:
-        raise InstallError(f"Could not start embedded Linux builder: {error}") from error
+        raise InstallError(f"Could not start build tool {argv[0]}: {error}") from error
     pending = bytearray()
     try:
         with selectors.DefaultSelector() as sel:
@@ -189,11 +145,9 @@ def _run(argv, cwd, emit, cancel, logfile):
                         emit("log", line, None)
         if pending:
             logfile.write(pending.decode("utf-8", "replace")[:1200] + "\n")
-        returncode = process.wait()
-        if returncode:
-            raise InstallError(
-                f"Embedded build command failed (exit {returncode}). See the source-build log. "
-                "On hardened systems, unprivileged user namespaces may be disabled.")
+        status = process.wait()
+        if status:
+            raise InstallError(f"Build command exited with code {status}. See source-build log.")
     except BaseException:
         if process.poll() is None:
             stop_process(process)
@@ -202,99 +156,115 @@ def _run(argv, cwd, emit, cancel, logfile):
         process.stdout.close()
 
 
-def _capture(command, source):
-    process = subprocess.run(command, cwd=source, env=_host_env(),
-                             capture_output=True, text=True, timeout=30, check=True)
-    return process.stdout.strip()
+def _capture(argv, cwd):
+    check = subprocess.run(argv, cwd=cwd, env=host_environment(),
+                           capture_output=True, text=True, timeout=30)
+    if check.returncode:
+        raise InstallError(f"Git failed: {check.stderr.strip()[:500]}")
+    return check.stdout.strip()
 
 
-def seed_sources(seed, source, cancel):
-    """Copy prebuilt dependencies only into a fresh, non-symlink build folder."""
-    folder = source / "build"
-    if folder.exists() or folder.is_symlink():
-        raise InstallError("The downloaded source contains a build/ path. Refusing to overwrite it.")
-    folder.mkdir()
-    for suffix in ("linux/src", "linux/x86_64/deps", "linux/x86_64/gen-venv", "zig", "zig-dl"):
-        check_cancel(cancel)
-        item = seed / "build" / suffix
-        if not item.is_dir() or item.is_symlink():
-            raise InstallError(f"Missing bundled build component: {suffix}")
-        destination = source / "build" / suffix
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(item, destination, symlinks=True, dirs_exist_ok=True)
-    check_cancel(cancel)
+def _podman_ready():
+    """Report rootless Podman failures before launching a lengthy build."""
+    try:
+        result = subprocess.run(["podman", "info", "--format", "json"],
+                                env=host_environment(), capture_output=True,
+                                text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise InstallError(f"Cannot initialize rootless Podman: {error}") from error
+    if result.returncode:
+        raise InstallError("Rootless Podman could not start. Check user namespaces and "
+                           "/etc/subuid and /etc/subgid. " + result.stderr.strip()[-700:])
+    try:
+        info = json.loads(result.stdout)
+    except ValueError as error:
+        raise InstallError("Podman returned invalid runtime information.") from error
+    security = (info.get("host") or {}).get("security") or {}
+    if not security.get("rootless"):
+        raise InstallError("Local source builds require rootless Podman. "
+                           "Please run the launcher as your regular user.")
 
 
-def build_pr_appimage(root, prs, emit, cancel):
-    """Build selected PRs on top of upstream test."""
-    return build_upstream_appimage(root, emit, cancel, prs=validated(prs))
+def build_pr_appimage(root, prs, emit, cancel, ask=None):
+    """Compile upstream test with selected pinned PRs in rootless Podman."""
+    return build_upstream_appimage(root, emit, cancel, ask=ask, prs=validated(prs))
 
 
-def build_test_appimage(root, emit, cancel):
-    """Build upstream test without applying any PR."""
-    return build_upstream_appimage(root, emit, cancel)
+def build_test_appimage(root, emit, cancel, ask=None):
+    """Compile upstream test without merging any PRs."""
+    return build_upstream_appimage(root, emit, cancel, ask=ask)
 
 
-def build_upstream_appimage(root, emit, cancel, prs=None):
-    """Use the embedded toolchain and offline sandbox for source compilation."""
+def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
+    """Install missing host build tools only with consent; keep saves untouched."""
     root = Path(root).resolve()
     mode = "test" if prs is None else "pr"
     if prs is not None:
         prs = validated(prs)
-    rootfs, seed, runner = bundled_builder()
+    if ask is None:
+        # Unit tests and programmatic callers must not silently install packages.
+        def ask(_):
+            return False
+    ensure_tools(root, emit, ask, cancel)
+    _podman_ready()
     work = root / ".sw-wrapper"
     if work.is_symlink():
-        raise InstallError("Installer working directory cannot be a symbolic link.")
+        raise InstallError("Installer working directory cannot be a symlink.")
     work.mkdir(exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f"{mode}-build-", dir=work))
     log = work / f"{mode}-build.log"
     try:
         with log.open("w", encoding="utf-8") as output:
             source = stage / "source"
-            source.mkdir()
-            def sandbox(argv, network=False):
-                return sandbox_command(rootfs, runner, source, argv, network=network)
             emit("reveal", "Building upstream test AppImage..." if prs is None
                  else "Building a custom AppImage from selected PRs...", None)
-            emit("stage", "Downloading upstream source using the bundled Git client...", None)
-            _run(sandbox(["git", "clone", "--no-tags", "--single-branch", "--branch", "test",
-                          UPSTREAM, "."], network=True), stage, emit, cancel, output)
+            emit("stage", "Downloading upstream source...", None)
+            _run(["git", "clone", "--no-tags", "--single-branch", "--branch", "test",
+                  UPSTREAM, str(source)], stage, emit, cancel, output)
             for pr in prs or []:
                 check_cancel(cancel)
                 number = pr["number"]
                 emit("stage", f"Applying PR #{number}...", None)
-                _run(sandbox(["git", "fetch", "origin", f"refs/pull/{number}/head"],
-                             network=True), stage, emit, cancel, output)
-                actual = _capture(sandbox(["git", "rev-parse", "FETCH_HEAD"]), stage)
+                _run(["git", "-C", str(source), "fetch", "origin",
+                      f"refs/pull/{number}/head"], stage, emit, cancel, output)
+                actual = _capture(["git", "rev-parse", "FETCH_HEAD"], source)
                 if actual != pr["sha"]:
-                    raise InstallError(f"PR #{number} changed during setup. Refresh the PR list.")
-                _run(sandbox(["git", "-c", "user.name=Savage Wind Portable",
-                              "-c", "user.email=portable@localhost", "merge", "--no-edit",
-                              "--no-ff", actual]), stage, emit, cancel, output)
-            commit = _capture(sandbox(["git", "rev-parse", "HEAD"]), stage)
+                    raise InstallError(f"PR #{number} changed. Refresh the PR list before building.")
+                _run(["git", "-c", "user.name=Savage Wind Portable",
+                      "-c", "user.email=portable@localhost", "-c",
+                      "core.hooksPath=/dev/null", "merge", "--no-edit",
+                      "--no-ff", actual], source, emit, cancel, output)
+            commit = _capture(["git", "rev-parse", "HEAD"], source)
             if not SHA.fullmatch(commit):
-                raise InstallError("Git returned an invalid source commit ID.")
+                raise InstallError("Git returned an invalid source revision.")
             emit("log", f"Source revision: {commit}", None)
-            emit("stage", "Preparing bundled compiler and prebuilt libraries...", None)
-            seed_sources(seed, source, cancel)
-            # No download or execution outside our bounded, network-isolated build process.
-            emit("stage", "Building with embedded Clang, Python and AppImage tools...", None)
-            _run(sandbox(["bash", "tools/linux/gen_helper.sh", "x86_64"]), stage, emit, cancel, output)
-            _run(sandbox(["bash", "tools/linux/package.sh", "x86_64"]), stage, emit, cancel, output)
+            emit("stage", "Preparing rootless Podman build container...", None)
+            image = "localhost/savagewind-local-builder:current"
+            _run(["podman", "build", "--arch", "amd64", "-t", image,
+                  "-f", "tools/linux/Containerfile", "tools/linux"],
+                 source, emit, cancel, output)
+            run = ["podman", "run", "--rm", "--arch", "amd64",
+                   "--volume", f"{source}:/src:Z", "--workdir", "/src", image]
+            emit("stage", "Generating the Linux build in Podman...", None)
+            _run(run + ["bash", "tools/linux/gen_helper.sh", "x86_64"],
+                 source, emit, cancel, output)
+            emit("stage", "Packaging the custom AppImage in Podman...", None)
+            _run(run + ["bash", "tools/linux/package.sh", "x86_64"],
+                 source, emit, cancel, output)
             results = list((source / "build/dist").glob("Savage_Wind-*-x86_64.AppImage"))
             if len(results) != 1 or results[0].is_symlink() or results[0].stat().st_size < 1024 * 1024:
                 raise InstallError("The build did not produce exactly one x86_64 AppImage.")
             with results[0].open("rb") as stream:
                 if stream.read(4) != b"\x7fELF":
-                    raise InstallError("The generated AppImage is not an ELF executable.")
+                    raise InstallError("The produced AppImage is not an ELF executable.")
             check_cancel(cancel)
             dest = root / ("SavageWind-test.AppImage" if prs is None else "SavageWind-custom.AppImage")
             if dest.is_symlink():
-                raise InstallError("The build output destination is a symbolic link.")
-            fd, temp = tempfile.mkstemp(prefix=".source-image-", dir=root)
+                raise InstallError("The custom AppImage destination is a symlink.")
+            fd, temp = tempfile.mkstemp(prefix=".custom-image-", dir=root)
             try:
-                with os.fdopen(fd, "wb") as target, results[0].open("rb") as source_file:
-                    shutil.copyfileobj(source_file, target, length=1024 * 1024)
+                with os.fdopen(fd, "wb") as target, results[0].open("rb") as built:
+                    shutil.copyfileobj(built, target, length=1024 * 1024)
                     target.flush()
                     os.fsync(target.fileno())
                 os.chmod(temp, 0o755)
@@ -305,11 +275,11 @@ def build_upstream_appimage(root, emit, cancel, prs=None):
                 if os.path.exists(temp):
                     os.unlink(temp)
             stat = dest.stat()
-            emit("progress", "Upstream test AppImage built successfully." if prs is None
-                 else "Custom AppImage built successfully.", 100)
+            emit("progress", "Upstream test AppImage built." if prs is None
+                 else "Custom AppImage built.", 100)
             return {"path": dest, "digest": digest, "size": stat.st_size,
                     "mtime_ns": stat.st_mtime_ns, "commit": commit,
                     "selection": f"test:{commit}" if prs is None else selection_key(prs)}
     finally:
-        # Keep saves, existing AppImages and the trusted installed builder untouched.
+        # Remove only the temporary source checkout, never game files or saves.
         shutil.rmtree(stage)
