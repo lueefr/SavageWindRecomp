@@ -28,6 +28,7 @@ class Window(QWidget):
         self.tab_labels = []
         self.pr_entries = []
         self.prs_changed = False
+        self.source_tab = 0
         state = read_state(self.root)
         self.current_custom = state.get("runtime_source") == "custom"
         self.has_game = valid_game(self.root / "root")
@@ -108,6 +109,7 @@ class Window(QWidget):
             self.packages[name] = field
         self.tabs.addTab(packages_page, "")
         self.tab_labels.append((packages_page, "NSP / XCI"))
+        self.tabs.currentChanged.connect(self.remember_source_tab)
         fields.addWidget(self.tabs)
         self.existing_label = QLabel()
         self.existing_label.setWordWrap(True)
@@ -225,6 +227,10 @@ class Window(QWidget):
         self.pr_intro.setVisible(checked)
         self.pr_refresh.setVisible(checked)
         self.pr_list.setVisible(checked)
+
+    def remember_source_tab(self, index):
+        if index in (0, 1):
+            self.source_tab = index
 
     def selected_prs(self):
         return [item.data(Qt.ItemDataRole.UserRole)
@@ -347,7 +353,7 @@ class Window(QWidget):
         if valid_game(self.root / "root") or valid_game(self.root / "extracted"):
             self.start("__reuse__")
             return
-        if self.tabs.currentIndex() != 1:
+        if self.source_tab == 0:
             folder = self.source.text().strip()
             if not folder:
                 QMessageBox.warning(self, tr("Select a folder", self.language), tr("Please select a folder containing exefs/ and romfs/.", self.language))
