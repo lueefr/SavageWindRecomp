@@ -40,6 +40,18 @@ done
 patchelf --set-rpath '$ORIGIN/../lib' "$APPDIR/usr/bin/hactool"
 cp wrapper/__init__.py wrapper/core.py wrapper/build_progress.py wrapper/launch.py wrapper/gtk_ui.py \
     wrapper/migration.py wrapper/rollback.py wrapper/pr_build.py wrapper/i18n.py "$APPDIR/usr/share/wrapper/"
+# Source builds use the toolchain inside the AppImage; no host Git or Podman is needed.
+BUILDER="$ROOT/builder/bundle"
+if [ ! -d "$BUILDER/rootfs" ] || [ ! -d "$BUILDER/seed" ] || [ ! -x "$BUILDER/bwrap" ]; then
+    echo "The embedded compiler is missing. Run tools/linux/build_wrapper_builder.sh first." >&2
+    exit 2
+fi
+mkdir -p "$APPDIR/usr/share/savagewind-builder" "$APPDIR/usr/lib"
+mv "$BUILDER/rootfs" "$BUILDER/seed" "$APPDIR/usr/share/savagewind-builder/"
+cp "$BUILDER/upstream-commit" "$APPDIR/usr/share/savagewind-builder/"
+cp "$BUILDER/bwrap" "$APPDIR/usr/bin/bwrap"
+cp -L "$BUILDER/libs/"*.so* "$APPDIR/usr/lib/" 2>/dev/null || true
+patchelf --set-rpath '$ORIGIN/../lib' "$APPDIR/usr/bin/bwrap"
 cp tools/linux/wrapper_AppRun "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
 cp tools/linux/wrapper.desktop "$APPDIR/savagewind-portable.desktop"
