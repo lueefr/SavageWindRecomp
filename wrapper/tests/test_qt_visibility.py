@@ -133,6 +133,52 @@ class HiddenLauncherTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_appimage_only_button_never_starts_native_or_game(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            window = qt_ui.Window(root, autoplay=False)
+            try:
+                window.test_branch.setChecked(True)
+                with mock.patch.object(window, "start") as start:
+                    window.build_image()
+                start.assert_called_once_with(None, mode="build_only", prs="test")
+            finally:
+                window.close()
+
+    def test_explicit_native_recompile_uses_optional_test_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.installed(root)
+            window = qt_ui.Window(root, autoplay=False)
+            try:
+                window.test_branch.setChecked(True)
+                with mock.patch.object(window, "start") as start:
+                    window.recompile_game()
+                start.assert_called_once_with("__reuse__", mode="native", prs="test")
+                with mock.patch.object(window, "start") as start:
+                    window.play_existing()
+                start.assert_called_once_with("__reuse__", mode="play", prs=None)
+            finally:
+                window.close()
+
+    def test_source_steps_and_eta_do_not_use_game_recompilation_steps(self):
+        with tempfile.TemporaryDirectory() as folder:
+            window = qt_ui.Window(Path(folder), autoplay=False)
+            try:
+                window.events.put(("event", "source-step", "Prepare compiler", 2))
+                window.events.put(("event", "source-eta",
+                                   "Decorrido: 1min 30s · ETA estimado: ~4min", None))
+                window.pump()
+                self.assertTrue(window._source_mode)
+                self.assertIn("Prepare compiler", window.step_view.item(2).text())
+                self.assertIn("ETA", window.eta.text())
+                window.events.put(("event", "native-start", "Recompiling native game code...", None))
+                window.pump()
+                self.assertFalse(window._source_mode)
+                self.assertIn("Recompilation", window.step_view.item(3).text())
+            finally:
+                window.close()
+
     def test_gui_language_defaults_to_english_and_persists(self):
         from wrapper.i18n import get_language
         with tempfile.TemporaryDirectory() as folder:
