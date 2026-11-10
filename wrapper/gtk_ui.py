@@ -144,7 +144,7 @@ class Window(Gtk.Window):
         self.custom.connect("toggled", self.custom_toggled)
         runtime_box.pack_start(self.custom, False, False, 0)
         self.pr_intro = Gtk.Label()
-        self.label(self.pr_intro, "Choose one or more PRs; each contains third-party code and may conflict. Requires git and Podman.")
+        self.label(self.pr_intro, "Select PRs to merge with upstream test. The build tools are included in this AppImage.")
         self.pr_intro.set_line_wrap(True)
         self.pr_intro.set_halign(Gtk.Align.START)
         runtime_box.pack_start(self.pr_intro, False, False, 0)
