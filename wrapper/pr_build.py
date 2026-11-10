@@ -314,21 +314,26 @@ def _recover_test_build(root, emit, ask, cancel):
     except OSError:
         return None
     revisions = re.findall(rb"(?m)^Source revision: ([0-9a-f]{40})\s*$", head)
-    if not revisions or not re.search(rb"(?m)^Success\s*$", tail):
+    if not re.search(rb"(?m)^Success\s*$", tail):
         return None
-    revision = revisions[-1].decode("ascii")
+    revision = revisions[-1].decode("ascii") if revisions else None
+    label = revision[:12] if revision else "not recorded (previous launcher)"
     if not ask("An AppImage from the previous test-branch build appears complete, "
                f"but the installer failed during temporary file cleanup.\n\n"
-               f"Commit: {revision[:12]}\n"
+               f"Source revision: {label}\n"
                f"File: {image}\n\n"
-               "Reuse and register this existing AppImage instead of compiling it "
-               "again? Choose No to fetch and build the latest upstream test branch."):
+               "Its executable format and build completion log were checked, but "
+               "an upstream checksum is unavailable. Reuse this local AppImage? "
+               "Choose No to fetch and build the latest upstream test branch."):
         return None
     digest = sha256(image, cancel)
-    emit("log", f"Recovered a previously packaged test AppImage for {revision}.", None)
+    commit = revision or f"unverified-local-{digest[:16]}"
+    emit("log", "Recovered a previously packaged test AppImage. "
+         + (f"Revision: {revision}" if revision else
+            "The old build log did not record the full source revision."), None)
     return {"path": image, "digest": digest, "size": stat.st_size,
-            "mtime_ns": stat.st_mtime_ns, "commit": revision,
-            "selection": f"test:{revision}"}
+            "mtime_ns": stat.st_mtime_ns, "commit": commit,
+            "selection": f"test:{commit}"}
 
 
 def build_pr_appimage(root, prs, emit, cancel, ask=None):
@@ -389,6 +394,8 @@ def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
             commit = _capture(["git", "rev-parse", "HEAD"], source)
             if not SHA.fullmatch(commit):
                 raise InstallError("Git returned an invalid source revision.")
+            output.write(f"Source revision: {commit}\n")
+            output.flush()
             emit("log", f"Source revision: {commit}", None)
             image = _prepare_toolchain(source, stage, emit, cancel, output)
             # Run as the host UID/GID so generated Zig files remain manageable.
