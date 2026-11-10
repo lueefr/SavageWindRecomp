@@ -1,117 +1,73 @@
-# Savage Wind: instalador portátil nativo para Linux
+# Linux Portable Launcher
 
-Este instalador usa a release oficial do [Savage Wind](https://github.com/Revivedx/SavageWindRecomp) sem modificá-la.
-O AppImage desta branch é um *wrapper* leve com interface Qt no Plasma e GTK 3/Adwaita no GNOME.
-Não inclui jogos, arquivos Nintendo Switch ou chaves.
+This fork uses the **unmodified official** [Savage Wind Recomp](https://github.com/Revivedx/SavageWindRecomp) AppImage. It supplies a separate native Linux launcher (Qt on KDE Plasma, GTK on GNOME) and does not distribute the game or keys.
 
-## Instalação
+## Installation
 
-Baixe o AppImage na [release de prévia portátil](https://github.com/lueefr/SavageWindRecomp/releases/tag/portable-preview),
-coloque-o na pasta em que pretende manter os dados e execute-o.
+Download the [portable preview AppImage](https://github.com/lueefr/SavageWindRecomp/releases/download/portable-preview/SavageWind-Portable-x86_64.AppImage), put it in the directory where you want to keep the installation, make it executable, and run it.
 
-Na primeira execução, escolha uma pasta contendo exefs/ e romfs/ do seu próprio dump atualizado
-ou a aba NSP/XCI para selecionar jogo base, atualização NSP e prod.keys.
-A barra de progresso informa a etapa real de importação, download e compilação.
-O log fica recolhido por padrão. Cancelar encerra o processo de importação ou compilação,
-inclusive seus subprocessos, e descarta os temporários de uma instalação incompleta.
+On first launch, select your own extracted `exefs/` and `romfs/` directory, or use the NSP/XCI importer with your own base game, update and `prod.keys`. The installer verifies its inputs and checks temporary disk space before proceeding. Importing and compiling may take a long time.
 
-A instalação utiliza a pasta **real** do próprio wrapper AppImage (não a pasta temporária montada pelo AppImage).
-A estrutura é aproximadamente:
+The AppImage resides in a **physical, writable directory**, not its temporary AppImage mount. The typical layout is:
 
-    Jogos/SavageWind/
-      SavageWind-Portable-x86_64.AppImage
-      SavageWind-official.AppImage
-      root/
-        exefs/, romfs/ (arquivos extraídos do jogo)
-      game/
-        swgame.so, swgame.so.id (biblioteca recompilada)
-        save/, cache/, fonts/, savagewind.ini
-        .xdg/ (configurações e dados de bibliotecas)
-      .sw-wrapper/ (controle do instalador, logs, temporários, rollback)
+```text
+SavageWind/
+  SavageWind-Portable-x86_64.AppImage
+  SavageWind-official.AppImage
+  root/
+    exefs/
+    romfs/
+  game/
+    swgame.so
+    swgame.so.id
+    save/
+    cache/
+    fonts/
+    savagewind.ini
+    .xdg/
+  .sw-wrapper/
+    build.log
+    import.log
+```
 
-O wrapper inclui um pacote atualizado de certificados confiáveis (certifi/Mozilla),
-para que consultas e downloads por HTTPS funcionem mesmo quando o Python empacotado
-não consegue descobrir os certificados da distribuição Linux. A validação TLS e
-a conferência de SHA-256 permanecem obrigatórias.
+`root/` contains game files from the user's copy; `game/` contains locally compiled native code, saves and configuration. The wrapper publishes `swgame.so` and its ID to `game/` after an upstream compilation finishes, and directs the official launcher to this library using `SAVAGEWIND_GAME_LIB`.
 
-O wrapper passa root/ como origem dos arquivos do jogo e usa
-SAVAGEWIND_GAME_LIB para carregar game/swgame.so sem copiar exefs/romfs/
-para game/. Durante a compilação, o upstream escreve a biblioteca no
-diretório root/ e o portable publica o par swgame.so/.id em game/ ao final.
+The HTTPS downloader bundles a maintained Mozilla certificate store, validates TLS, verifies its downloads, and does not silently accept unverified upstream builds.
 
-Instalações antigas do wrapper são reorganizadas automaticamente: extracted/
-vira root/, enquanto saves, configurações e bibliotecas compiladas vão
-para game/. Em caso de conflito, a migração é interrompida sem sobrescrever
-arquivos. Dados antigos fora do portable continuam exigindo consentimento.
+## Updates and runtime isolation
 
-O wrapper define SAVAGEWIND_DATA_ROOT, HOME, XDG_CONFIG_HOME, XDG_DATA_HOME,
-XDG_STATE_HOME, XDG_CACHE_HOME, MESA_SHADER_CACHE_DIR e TMPDIR **antes**
-de executar o upstream e seus auxiliares. O novo fluxo não escreve em
-~/.local/share/savagewind. Se encontrar dados de uma instalação anterior nesse
-caminho, oferece migração com consentimento; nunca os apaga ou sobrescreve silenciosamente.
+Each launch can check official upstream releases, including prereleases. The wrapper compares verified SHA-256 digests and can reuse a matching official AppImage already present. It asks before replacing an installed official version. The downloaded game executable is neither patched nor repackaged.
 
-Para pedir a janela do instalador mesmo com o jogo já instalado:
+With an unchanged installation, the UI can remain completely hidden while the launcher checks for updates, validates the existing build, and starts the game. The installation interface opens for required setup, recovery, migration, or errors; `--config` opens it explicitly:
 
-    ./SavageWind-Portable-x86_64.AppImage --config
+```sh
+./SavageWind-Portable-x86_64.AppImage --config
+```
 
-## Atualizações e execução
+The wrapper sets `SAVAGEWIND_DATA_ROOT`, `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, `MESA_SHADER_CACHE_DIR` and `TMPDIR` before launching the upstream executable. The game is therefore intended to keep its runtime state within `game/` rather than `~/.local/share/savagewind/`.
 
-A cada abertura, consulta as releases publicadas no repositório oficial,
-incluindo **pré-releases**, e compara o SHA-256 do AppImage.
-Se o jogo já estiver instalado, essa consulta acontece em uma thread de trabalho
-**com a janela inteiramente oculta**; sem atualização nem preparação obrigatória,
-o jogo abre diretamente, sem exibir a interface do wrapper. Se encontrar uma
-atualização, mostra apenas a confirmação. A janela de progresso só aparece
-depois que o usuário aceitar a atualização, ou para recuperação, migração,
-compilação necessária ou um erro. No primeiro uso, o formulário de instalação
-é exibido normalmente. A consulta de rede ainda é concluída antes de iniciar
-o jogo, para que atualizações possam ser oferecidas antes de abrir a sessão. Quando encontra
-atualização, pergunta se deseja instalá-la. O download tem progresso,
-pode ser cancelado e só substitui a cópia gerenciada após validação de tamanho
-e hash. A busca por AppImages já baixados se limita a pastas comuns e à pasta
-do wrapper, sem varreduras custosas do disco. Apenas binários oficiais
-com hash correspondente são reaproveitados.
+Previous portable layouts are migrated carefully: `extracted/` becomes `root/`, and previous native libraries and save data are moved to `game/`. Conflicts are treated as errors rather than overwritten blindly. Data outside the portable installation is migrated only with user consent.
 
-Se a versão não mudou e swgame.so já está preparado para ela, pula a recompilação.
-Quando ela é necessária, acompanha os registros temporários do gerador oficial e os objetos nativos compilados,
-mostrando módulos, funções convertidas, partes geradas, unidades compiladas e a vinculação final de swgame.so.
-A barra apresenta uma **porcentagem aproximada** derivada dessas medições. O ETA dinâmico só aparece após
-acumular amostras suficientes; ele estima o tempo até a vinculação, e não promete um horário exato de término.
-Os detalhes são registrados em .sw-wrapper/build.log (linhas [progresso]) e no log expansível da interface.
-A leitura é limitada a uma janela do final de cada log e a uma amostragem da pasta temporária, evitando
-varreduras recursivas ou consumo excessivo de CPU.
-O compilador recebe prioridade de agendamento menor para preservar a
-responsividade do desktop, mas ainda pode consumir CPU e RAM em máquinas lentas.
-O upstream é iniciado diretamente com --play, sem mostrar o menu dele.
+## Native recompilation and progress
 
-Em caso de falha após iniciar a troca de versão, a atualização guarda o AppImage
-anterior e o código nativo compilado em .sw-wrapper/rollback/ e recupera os
-arquivos na execução seguinte. Saves e configurações não participam dessa troca.
+The upstream application performs its own native game-code compilation. The wrapper monitors the upstream process and its `root/.gamebuild/` work files for generated code, modules and compiled objects, while preserving the official toolchain and output.
 
-O importador requer espaço livre significativo para os dados temporários de BKTR
-e RomFS. Os pacotes NSP/XCI são processados localmente com o hactool fixado
-e validadores provenientes de MacNativeGames (MIT); o arquivo prod.keys é lido
-na importação e não é incorporado ao AppImage.
+The displayed percentage is an **approximation based on measured work**, not a guaranteed upstream progress value. The ETA becomes available only when enough samples exist. Long, silent stages are possible; UI updates do not prove success or failure.
 
-## Limitações e testes
+A completed native build can be reused if the official version, CPU target and on-disk library identity match. An older build rejected solely because the upstream process was silent can be recovered conservatively when logs, artifacts and timestamps support that conclusion. An explicit upstream `NOT READY` result remains a failure.
 
-A instalação portátil não faz varredura recursiva em todos os discos e não executa
-AppImages antigos não verificados. Pode ser necessário selecionar manualmente
-seus próprios arquivos no primeiro uso.
+Diagnostics are saved under `.sw-wrapper/`, including `build.log` and `import.log`. The GUI displays new stages without endlessly appending duplicate progress messages. Cancellation stops import or compilation subprocesses and cleans incomplete temporary work.
 
-A preparação de swgame.so usa um mecanismo de montagem/teste já presente no upstream,
-mas ainda não é uma API estável garantida por seus mantenedores. Testes unitários
-não substituem validação com um dump próprio do jogo nem comprovam desempenho em
-todos os desktops.
+The previous official version and compiled artifacts can be retained for rollback when updates fail. Saves and settings are not part of that replacement.
 
-O wrapper diferencia a confirmação da compilação da confirmação de preparação do launcher.
-Quando a biblioteca e seu identificador foram produzidos pelo compilador oficial e o log
-confirma o término, ele não descarta o resultado apenas porque falta a mensagem READY.
-Uma rejeição explícita NOT READY continua sendo um erro. Se o executável iniciar o jogo
-durante a preparação, o wrapper identifica a entrada no código do jogo, encerra aquela
-instância e inicia novamente com o caminho portátil. Os motivos e verificações são
-registrados no build.log. Essa recuperação não pode comprovar compatibilidade em versões
-futuras do upstream sem uma execução real do jogo.
+## Requirements and limitations
 
-Os testes sintéticos estão em wrapper/tests/ e tools/linux/test_import_game.py.
-O workflow .github/workflows/wrapper.yml também gera e verifica o AppImage Linux.
+- Linux x86-64 and a Vulkan-compatible GPU/driver meeting the official game's requirements.
+- A compatible, legally acquired game copy; no game, keys, firmware, or copyrighted Nintendo assets are distributed.
+- Significant free space for NSP/XCI extraction and temporary BKTR/RomFS processing.
+- The importer uses pinned local extraction helpers, validates checksums and reads user-supplied keys only during import.
+- The wrapper never guarantees a particular compilation time or frame rate. It remains dependent on the upstream release's command-line behavior and game format.
+
+Unit tests are in `wrapper/tests/` and `tools/linux/test_import_game.py`. The portable AppImage is built by `.github/workflows/wrapper.yml`; synthetic tests do not replace a real game launch test.
+
+For original runtime features and game issues, consult the **[upstream Savage Wind Recomp repository](https://github.com/Revivedx/SavageWindRecomp)**. This fork is independent and concentrates on portable distribution.
