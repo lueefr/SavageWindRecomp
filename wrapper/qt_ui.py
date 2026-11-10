@@ -631,7 +631,7 @@ class Window(QWidget):
                 elif event[1] in ("built", "native-built"):
                     self.cancel_button.setEnabled(False)
                     self.back_button.show()
-                    self.mark_step(len(self.source_steps) if event[1] == "built" else 4)
+                    self.mark_step(len(self.source_steps) if event[1] == "built" else 3)
                     self.stage.setText(tr("AppImage build completed." if event[1] == "built"
                                           else "Game code recompilation completed.", self.language))
                     self.bar.setRange(0, 100)
