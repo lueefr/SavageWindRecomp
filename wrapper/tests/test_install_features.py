@@ -159,6 +159,51 @@ class InstallerFeatures(unittest.TestCase):
             ready.assert_called_once()
             tun.assert_called_once()
 
+    def test_recover_successful_test_appimage_without_building(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            state = root / ".sw-wrapper"
+            state.mkdir()
+            (state / "test-build.log").write_text(
+                "Packaging game\nCreating filesystem\nSuccess\n")
+            image = root / "SavageWind-test.AppImage"
+            image.write_bytes(b"\x7fELF" + b"x" * 1_100_000)
+            messages = []
+            with mock.patch.object(pr_build, "ensure_tools") as tools:
+                with mock.patch.object(pr_build, "_run") as build:
+                    result = pr_build.build_test_appimage(
+                        root, lambda *args: messages.append(args),
+                        threading.Event(), ask=lambda text: True)
+            tools.assert_not_called()
+            build.assert_not_called()
+            self.assertEqual(result["path"], image)
+            self.assertTrue(result["commit"].startswith("unverified-local-"))
+            self.assertEqual(len(result["digest"]), 64)
+            self.assertTrue(any("Recovered" in entry[1] for entry in messages))
+
+    def test_recovery_is_explicit_and_requires_completed_log(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            state = root / ".sw-wrapper"
+            state.mkdir()
+            log = state / "test-build.log"
+            log.write_text("Source revision: " + "a" * 40 + "\nSuccess\n")
+            image = root / "SavageWind-test.AppImage"
+            image.write_bytes(b"\x7fELF" + b"x" * 1_100_000)
+            asked = []
+            def decline(message):
+                asked.append(message)
+                return False
+            self.assertIsNone(pr_build._recover_test_build(
+                root, lambda *_: None, decline, threading.Event()))
+            self.assertIn("aaaaaaaaaaaa", asked[0])
+            self.assertEqual(pr_build._recover_test_build(
+                root, lambda *_: None, lambda _: True, threading.Event())["commit"],
+                "a" * 40)
+            log.write_text("Source revision: " + "a" * 40 + "\nNo completion yet\n")
+            self.assertIsNone(pr_build._recover_test_build(
+                root, lambda *_: None, lambda _: True, threading.Event()))
+
     def test_cleanup_permission_error_uses_rootless_namespace_only(self):
         with tempfile.TemporaryDirectory() as folder:
             stage = Path(folder) / "test-build-safe"
