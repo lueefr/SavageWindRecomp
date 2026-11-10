@@ -938,7 +938,7 @@ class Pipeline:
                                 "This is development code that may be unstable. "
                                 "The official AppImage and your saves will be preserved."):
                     return "setup"
-                result = build_test_appimage(root, self.status, self.cancel)
+                result = build_test_appimage(root, self.status, self.cancel, ask=self.ask)
                 installed = result["path"]
                 state.update({
                     "runtime_source": "test", "test_digest": result["digest"],
@@ -957,7 +957,7 @@ class Pipeline:
                                 "Building and running them may execute arbitrary code. "
                                 "Continue only if you trust every author. Continue?"):
                     return "setup"
-                result = build_pr_appimage(root, self.prs, self.status, self.cancel)
+                result = build_pr_appimage(root, self.prs, self.status, self.cancel, ask=self.ask)
                 installed = result["path"]
                 state.update({
                     "runtime_source": "custom", "custom_digest": result["digest"],
