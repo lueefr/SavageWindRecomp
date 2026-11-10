@@ -12,7 +12,6 @@ on:
       - "!wrapper/**/*.rst"
       - "!wrapper/**/*.txt"
       - "tools/linux/build_wrapper.sh"
-      - "tools/linux/build_wrapper_builder.sh"
       - "tools/linux/wrapper_AppRun"
       - "tools/linux/wrapper.desktop"
       - "tools/linux/import_game.py"
@@ -72,7 +71,7 @@ jobs:
           PYTHONPATH=tools/linux python tools/linux/test_import_game.py
           python tools/linux/test_portable_release.py
           sh -n tools/linux/wrapper_AppRun
-          bash -n tools/linux/build_wrapper.sh tools/linux/build_wrapper_builder.sh
+          bash -n tools/linux/build_wrapper.sh
 
   appimage:
     name: Build and publish versioned AppImage
@@ -81,7 +80,7 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -99,8 +98,6 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest wrapper.tests.test_qt_visibility -v
-      - name: Prepare complete offline source compiler
-        run: bash tools/linux/build_wrapper_builder.sh x86_64
       - name: Build portable AppImage
         env:
           QT_QPA_PLATFORM: offscreen
@@ -113,15 +110,14 @@ jobs:
           ./SavageWind-Portable-x86_64.AppImage --appimage-extract >/dev/null
           test -x squashfs-root/usr/bin/swqt/swqt
           test -x squashfs-root/usr/bin/swextract
-          test -x squashfs-root/usr/bin/bwrap
-          test -x squashfs-root/usr/share/savagewind-builder/rootfs/usr/bin/clang
-          test -x squashfs-root/usr/share/savagewind-builder/seed/build/zig/zig
           test -x squashfs-root/usr/bin/hactool
           squashfs-root/usr/bin/swextract --help >/dev/null
           test -s squashfs-root/usr/share/wrapper/ca-bundle.pem
           SSL_CERT_FILE=/dev/null SSL_CERT_DIR=/nonexistent \
           SAVAGEWIND_CA_BUNDLE="$PWD/squashfs-root/usr/share/wrapper/ca-bundle.pem" \
           squashfs-root/usr/bin/swqt/swqt --tls-selftest
+          test -f squashfs-root/usr/share/wrapper/deps.py
+          test ! -e squashfs-root/usr/share/savagewind-builder
           test -f squashfs-root/usr/share/wrapper/build_progress.py
           test -f squashfs-root/usr/share/wrapper/core.py
           test -f squashfs-root/usr/share/wrapper/rollback.py
