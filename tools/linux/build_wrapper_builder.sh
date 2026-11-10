@@ -53,9 +53,9 @@ rm -rf "$OUTPUT/rootfs/usr/share/doc" "$OUTPUT/rootfs/usr/share/man" \
 cp "$OUTPUT/rootfs/usr/bin/bwrap" "$OUTPUT/bwrap"
 
 # Bundle bwrap's host-side libraries instead of asking players to install packages.
-for pattern in libcap.so libseccomp.so libattr.so; do
-    found=$(find "$OUTPUT/rootfs/lib" "$OUTPUT/rootfs/usr/lib" -name "$pattern*" -type f -print -quit 2>/dev/null || true)
-    if [ -n "$found" ]; then cp -L "$found" "$OUTPUT/libs/"; fi
+for name in libcap.so.2 libseccomp.so.2 libattr.so.1; do
+    found=$(find "$OUTPUT/rootfs/lib" "$OUTPUT/rootfs/usr/lib" -name "$name" -print -quit 2>/dev/null || true)
+    if [ -n "$found" ]; then cp -L "$found" "$OUTPUT/libs/$name"; fi
 done
 [ -x "$OUTPUT/bwrap" ] || { echo "Missing bubblewrap executable" >&2; exit 1; }
 [ -x "$OUTPUT/rootfs/usr/bin/clang" ] || { echo "Missing Clang compiler" >&2; exit 1; }
