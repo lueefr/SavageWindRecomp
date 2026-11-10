@@ -138,6 +138,30 @@ class Dependencies(unittest.TestCase):
                                 deps.ensure_tools(folder, lambda *_: None, lambda _: True,
                                                   threading.Event())
 
+    def test_kernel_module_mismatch_recommends_reboot(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "6.18.51-1-cachyos-lts").mkdir()
+            issue = deps.kernel_module_issue("6.18.50-1-cachyos-lts", folder)
+            self.assertIn("6.18.50-1-cachyos-lts", issue)
+            self.assertIn("6.18.51-1-cachyos-lts", issue)
+            self.assertIn("reboot", issue)
+            self.assertIsNone(deps.kernel_module_issue("6.18.51-1-cachyos-lts", folder))
+
+    def test_missing_modules_stops_before_requesting_modprobe(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "new-version").mkdir()
+            with mock.patch.object(deps, "tun_ready", return_value=False):
+                with mock.patch.object(deps, "kernel_module_issue",
+                                       return_value=deps.kernel_module_issue("old-version", folder)):
+                    with mock.patch.object(deps.subprocess, "run") as process:
+                        ask = mock.Mock()
+                        with self.assertRaisesRegex(InstallError, "reboot"):
+                            deps.ensure_tun(root, lambda *_: None, ask, threading.Event())
+                        process.assert_not_called()
+                        ask.assert_not_called()
+
     def test_tun_detects_missing_kernel_module(self):
         import errno
         with mock.patch.object(deps.os, "open",
@@ -151,13 +175,14 @@ class Dependencies(unittest.TestCase):
             ask.assert_not_called()
 
     def test_declined_tun_does_not_execute_privileged_commands(self):
-        with mock.patch.object(deps, "tun_ready", return_value=False):
-            with mock.patch.object(deps.shutil, "which", side_effect=available("pkexec", "modprobe")):
-                with mock.patch.object(deps.subprocess, "run") as process:
-                    with self.assertRaises(Cancelled):
-                        deps.ensure_tun(Path.home(), lambda *_: None, lambda _: False,
-                                        threading.Event())
-                    process.assert_not_called()
+        with mock.patch.object(deps, "kernel_module_issue", return_value=None):
+            with mock.patch.object(deps, "tun_ready", return_value=False):
+                with mock.patch.object(deps.shutil, "which", side_effect=available("pkexec", "modprobe")):
+                    with mock.patch.object(deps.subprocess, "run") as process:
+                        with self.assertRaises(Cancelled):
+                            deps.ensure_tun(Path.home(), lambda *_: None, lambda _: False,
+                                            threading.Event())
+                        process.assert_not_called()
 
     def test_approved_tun_load_is_rechecked(self):
         with mock.patch.object(deps, "tun_ready", side_effect=[False, True]):
@@ -165,8 +190,9 @@ class Dependencies(unittest.TestCase):
                 with mock.patch.object(deps.subprocess, "run",
                                        return_value=mock.Mock(returncode=0)) as run:
                     events = []
-                    deps.ensure_tun(Path.home(), lambda *x: events.append(x),
-                                    lambda _: True, threading.Event())
+                    with mock.patch.object(deps, "kernel_module_issue", return_value=None):
+                        deps.ensure_tun(Path.home(), lambda *x: events.append(x),
+                                        lambda _: True, threading.Event())
                     self.assertEqual(run.call_args.args[0][-2:], ["/usr/bin/modprobe", "tun"])
                     self.assertTrue(any("available" in entry[1] for entry in events))
 
@@ -176,8 +202,9 @@ class Dependencies(unittest.TestCase):
                 with mock.patch.object(deps.subprocess, "run",
                                        return_value=mock.Mock(returncode=0)):
                     with self.assertRaisesRegex(InstallError, "does not work"):
-                        deps.ensure_tun(Path.home(), lambda *_: None, lambda _: True,
-                                        threading.Event())
+                        with mock.patch.object(deps, "kernel_module_issue", return_value=None):
+                            deps.ensure_tun(Path.home(), lambda *_: None, lambda _: True,
+                                            threading.Event())
 
     def test_terminal_for_arch_kde(self):
         cmd = deps.terminal_command("echo success", which=available("konsole"))
