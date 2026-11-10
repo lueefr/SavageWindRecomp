@@ -105,3 +105,11 @@ The source builder uses `podman run --network=pasta` with Podman 6-compatible ro
 Compilation executes within a rootless Podman container, while the portable launcher never includes the user's game files, keys or saves in that container. Build dependencies and source are fetched over the network during the local build. The official upstream AppImage option does not require Podman or Git and does not trigger package installation.
 
 CI checks the small launcher, Python/Qt behavior and distro-detection tests; it does not install host packages or run a potentially heavy upstream source compilation on every pull request. Keep this PR in draft until a real `test` and PR build have been tested on the target systems.
+
+## Native game-code staging for current upstream test builds
+
+The upstream's current `test` runtime treats `<SAVAGEWIND_DATA_ROOT>/extracted` as its required game directory and refuses some game-code cleanup operations outside that directory. The portable layout deliberately stores the extracted game in `root/` and saves/settings in `game/`. During local `test` and combined-PR native-code setup, the installer **renames** `root/` to `game/extracted/` for the duration of the compiler, then renames it back, with no RomFS duplication. The final native `swgame.so` and `swgame.so.id` files are moved into `game/`; the user's saves remain untouched. Official release builds retain their previously working setup path.
+
+The temporary move is protected by the install operation lock and a persistent `.sw-wrapper/code-stage` marker. If the launcher or operating system crashes, the next installer operation restores `root/` from `game/extracted/` **before** checking game files. If both directories exist unexpectedly, it refuses to overwrite or delete either. A failed or cancelled build restores the original directory on exit. The built-in progress meter follows the temporary working path. Missing native-code artifacts are diagnosed using the upstream `game/savagewind.log` (which records the actual code-generation/linker errors, unlike the launcher stdout pipe).
+
+The presence of a packaged AppImage does **not** imply that the player's native game code has been built for it. Compilation and validation of the game library are a separate step. Never remove `root/`, `game/`, or the save files simply because native-code validation failed.
