@@ -507,7 +507,7 @@ class Window(QWidget):
                 response = QMessageBox.question(parent, "Savage Wind", progress_text(message, self.language),
                                                 QMessageBox.StandardButton.Yes |
                                                 QMessageBox.StandardButton.No,
-                                                QMessageBox.StandardButton.Yes)
+                                                QMessageBox.StandardButton.No)
                 answer.append(response == QMessageBox.StandardButton.Yes)
                 gate.set()
             elif event[0] == "pr-list":
