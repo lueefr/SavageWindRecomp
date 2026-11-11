@@ -684,7 +684,7 @@ def build_game(root, binary, emit, cancel):
         _run_game_build(root, binary, emit, cancel, game_files(root))
     publish_code(root)
     emit("log", "Native code moved into game/swgame.so.", None)
-    emit("progress", "Native code validated. Launching the game...", 100)
+    emit("progress", "Native code validated.", 100)
 
 
 def _run_game_build(root, binary, emit, cancel, source):
