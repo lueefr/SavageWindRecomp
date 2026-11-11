@@ -968,11 +968,13 @@ def import_packages(root, paths, emit, cancel):
 
 
 class Pipeline:
-    def __init__(self, root, emit, ask, cancel, prs=None, mode="install"):
+    def __init__(self, root, emit, ask, cancel, prs=None, mode="install",
+                 ask_update=None):
         self.root = Path(root).resolve()
         self.emit, self.ask, self.cancel = emit, ask, cancel
         self.prs = prs  # None: preserve runtime; []: official; "test": upstream test; list: PRs
-        if mode not in ("install", "build_only", "play", "native"):
+        self.ask_update = ask_update
+        if mode not in ("install", "build_only", "play", "native", "startup"):
             raise ValueError("Invalid portable installer operation")
         self.mode = mode
         self._last_progress = 0.0
@@ -1052,6 +1054,12 @@ class Pipeline:
                     "runtime_source": "custom", "custom_digest": result["digest"],
                     "custom_selection": result["selection"], "custom_size": result["size"],
                     "custom_mtime_ns": result["mtime_ns"],
+                    "custom_prs": [{"number": pr["number"], "sha": pr["sha"]}
+                                   for pr in self.prs],
+                    "custom_base": result.get("base_commit"),
+                    "custom_prs": [{"number": pr["number"], "sha": pr["sha"]}
+                                   for pr in self.prs],
+                    "custom_base": result.get("base_commit"),
                 })
                 write_state(root, state)
             else:
