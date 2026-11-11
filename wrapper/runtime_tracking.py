@@ -88,13 +88,31 @@ def record(root, state, changes=None):
     else:
         entry = document["current"]
         entry.update(current)
+    native = {key: state[key] for key in ("built_digest", "built_cpu") if key in state}
+    native_changed = entry.get("native") != native
+    if native_changed:
+        entry["native"] = native
     if changes is not None:
         # Store the escaped changelog with its original clickable GitHub links.
         title = str(changes.get("title") or "")[:200]
         details = str(changes.get("html") or "")[:12000]
         entry["changes"] = [{"title": title, "html": details}]
-    if changed or changes is not None or not _path(root).is_file():
+    if changed or native_changed or changes is not None or not _path(root).is_file():
         _save(root, document)
+
+
+def mark_reset(root):
+    """Keep the old audit trail but clear the active installation after reset."""
+    path = _path(root)
+    if not path.is_file():
+        return
+    document = read(root)
+    document["history"].append({
+        "event": "installation_reset",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    document["current"] = None
+    _save(root, document)
 
 
 def recover(root):
@@ -128,6 +146,7 @@ def recover(root):
         source + "_size": current["size"],
         source + "_mtime_ns": current["mtime_ns"],
     }
+    state.update(current.get("native") or {})
     if source == "official":
         state["official_tag"] = current.get("version")
     elif source == "test":
