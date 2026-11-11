@@ -179,6 +179,36 @@ class HiddenLauncherTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_post_appimage_prompt_defaults_to_no_and_is_translated(self):
+        from threading import Event
+        from PySide6.QtWidgets import QMessageBox
+        from wrapper.i18n import tr
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            window = qt_ui.Window(root, autoplay=False)
+            try:
+                language_index = window.language_box.findData("pt-BR")
+                window.language_box.setCurrentIndex(language_index)
+                message = (
+                    "The AppImage is ready.\n\n"
+                    "Recompile the game's native library (swgame.so) using this AppImage now?\n\n"
+                    "This can take a long time and will replace the existing native library. "
+                    "Saves, settings and extracted game files will be preserved.\n\n"
+                    "Choose No to finish without recompiling the game.")
+                self.assertIn("Deseja recompilar", tr(message, "pt-BR"))
+                answer, gate = [], Event()
+                window.events.put(("question", message, answer, gate))
+                with mock.patch.object(qt_ui.QMessageBox, "question",
+                                       return_value=QMessageBox.StandardButton.No) as dialog:
+                    window.pump()
+                self.assertTrue(gate.is_set())
+                self.assertEqual(answer, [False])
+                self.assertIn("Deseja recompilar", dialog.call_args.args[2])
+                self.assertEqual(dialog.call_args.args[-1],
+                                 QMessageBox.StandardButton.No)
+            finally:
+                window.close()
+
     def test_gui_language_defaults_to_english_and_persists(self):
         from wrapper.i18n import get_language
         with tempfile.TemporaryDirectory() as folder:
