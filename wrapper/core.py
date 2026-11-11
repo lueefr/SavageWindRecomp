@@ -1192,12 +1192,18 @@ class Pipeline:
         source = state.get("runtime_source", "official")
         update = None
         if not suppressed(root, source):
-            self.status("stage", "Checking for updates to the selected AppImage...")
-            try:
-                update = check_update(state)
-            except (OSError, ValueError, InstallError, urllib.error.URLError) as error:
-                self.status("log", f"Update check unavailable ({source}): {error}. "
-                            "Using the installed AppImage.")
+            if source == "custom" and not state.get("custom_prs"):
+                self.status("log", "This custom AppImage predates PR revision tracking. "
+                            "Re-select and rebuild its PRs once to enable update checks.")
+            else:
+                self.status("stage", "Checking for updates to the selected AppImage...")
+                try:
+                    update = check_update(state)
+                except Exception as error:
+                    # GitHub metadata failures are never grounds to block an
+                    # already installed and working offline game.
+                    self.status("log", f"Update check unavailable ({source}): {error}. "
+                                "Using the installed AppImage.")
         else:
             self.status("log", f"Update notifications for {source} are disabled.")
         if update is not None:
