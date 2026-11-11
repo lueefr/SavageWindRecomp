@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushBu
     QDialog, QDialogButtonBox, QTextBrowser)
 
 from .core import (Pipeline, Cancelled, InstallError, valid_game, compiled_code,
-                   read_state, installed_runtime, reset_install)
+                   read_state, installed_runtime, reset_install, untracked_appimage)
 from .migration import legacy_folder
 from .i18n import LANGUAGES, get_language, set_language, tr, progress_text
 from .pr_build import open_prs
@@ -40,7 +40,7 @@ class Window(QWidget):
                                (self.root / ".sw-wrapper/code-stage").is_file())
         self.autostart = bool(autoplay and
                               ((self.has_game and installed_runtime(self.root, state)) or
-                               self.needs_recovery))
+                               self.needs_recovery or untracked_appimage(self.root)))
         self.setWindowTitle(tr("Savage Wind — Installer", self.language))
         self.resize(750, 680)
         layout = QVBoxLayout(self)
@@ -248,7 +248,8 @@ class Window(QWidget):
         if self.autostart:
             self.form.hide()
             QTimer.singleShot(0, lambda: self.start(None, mode="startup"))
-        elif autoplay and not installed_runtime(self.root, state):
+        elif (autoplay and not installed_runtime(self.root, state)
+              and not untracked_appimage(self.root)):
             QTimer.singleShot(0, self.prompt_initial_source)
 
     def label(self, widget, message, setter="setText"):
@@ -719,6 +720,8 @@ class Window(QWidget):
                     if not self.isVisible():
                         self.show()
                         QApplication.instance().setQuitOnLastWindowClosed(True)
+                    if not installed_runtime(self.root, read_state(self.root)):
+                        QTimer.singleShot(0, self.prompt_initial_source)
                 else:
                     self.reveal(tr("Operation cancelled.", self.language))
                     self.cancel_button.setEnabled(False)
