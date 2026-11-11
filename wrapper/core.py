@@ -1062,6 +1062,50 @@ class Pipeline:
         self.status("log", "Executable build complete. Native game code and saves are unchanged.")
         return "built"
 
+    def compile_native(self, root, installed):
+        """Compile native game code only after explicit permission or a native action."""
+        self.status("native-start", "Recompiling native game code...", None)
+        self.status("reveal", "Recompiling game code at your request...")
+        build_game(root, installed, self.status, self.cancel)
+        state = read_state(root)
+        active = (state.get("test_digest") if state.get("runtime_source") == "test" else
+                  state.get("custom_digest") if state.get("runtime_source") == "custom" else
+                  state.get("official_digest"))
+        state["built_digest"] = active
+        state["built_cpu"] = cpu_target()
+        write_state(root, state)
+        self.status("progress", "Native game code compiled. Use Play to launch.", 100)
+        return "native-built"
+
+    def offer_native_after_appimage(self):
+        """Offer, but never force, native compilation with the selected AppImage."""
+        root = self.root
+        if not valid_game(game_files(root)):
+            self.status("log", "AppImage built. Native game compilation was not offered "
+                        "because root/ does not contain valid game files.", None)
+            return "built"
+        question = (
+            "The AppImage is ready.\n\n"
+            "Recompile the game's native library (swgame.so) using this AppImage now?\n\n"
+            "This can take a long time and will replace the existing native library. "
+            "Saves, settings and extracted game files will be preserved.\n\n"
+            "Choose No to finish without recompiling the game.")
+        if not self.ask(question):
+            self.status("log", "Native game recompilation declined. "
+                        "The existing swgame.so and saves were preserved.", None)
+            return "built"
+        check_cancel(self.cancel)
+        state = read_state(root)
+        installed = installed_runtime(root, state)
+        if not installed:
+            raise InstallError("The newly built AppImage could not be verified. "
+                               "Native game recompilation was not started.")
+        # The full setup path prepares the same runtime environment before a
+        # native build. The AppImage-only path deliberately skips this until consent.
+        portable_env(root)
+        recover_code_stage(root, self.status)
+        return self.compile_native(root, installed)
+
     def select_native_runtime(self):
         """Resolve the explicitly selected executable before recompiling game code."""
         root = self.root
@@ -1120,7 +1164,10 @@ class Pipeline:
             raise InstallError("A pasta .sw-wrapper não pode ser um link simbólico.")
         (root / ".sw-wrapper").mkdir(exist_ok=True)
         if self.mode == "build_only":
-            return self.build_source_only()
+            result = self.build_source_only()
+            if result != "built":
+                return result
+            return self.offer_native_after_appimage()
         self.status("stage", "Preparando o armazenamento portátil...")
         from .rollback import Rollback
         pending = Rollback(root)
@@ -1179,17 +1226,7 @@ class Pipeline:
                                 "The new AppImage may require a matching library; the upstream "
                                 "loader will check compatibility.")
                 return self.launch_existing(root, installed)
-            self.status("native-start", "Recompiling native game code...", None)
-            self.status("reveal", "Recompiling game code at your request...")
-            build_game(root, installed, self.status, self.cancel)
-            active = (state.get("test_digest") if state.get("runtime_source") == "test" else
-                      state.get("custom_digest") if state.get("runtime_source") == "custom" else
-                      state.get("official_digest"))
-            state["built_digest"] = active
-            state["built_cpu"] = cpu_target()
-            write_state(root, state)
-            self.status("progress", "Native game code compiled. Use Play to launch.", 100)
-            return "native-built"
+            return self.compile_native(root, installed)
         build_only = False  # An explicit AppImage-only operation exits above.
         if source and valid_game(game_files(root)):
             raise InstallError("O jogo já está instalado nesta pasta. Seus arquivos não serão substituídos.")
