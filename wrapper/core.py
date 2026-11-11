@@ -1446,6 +1446,9 @@ class Pipeline:
                     "runtime_source": "custom", "custom_digest": result["digest"],
                     "custom_selection": result["selection"], "custom_size": result["size"],
                     "custom_mtime_ns": result["mtime_ns"],
+                    "custom_prs": [{"number": pr["number"], "sha": pr["sha"]}
+                                   for pr in self.prs],
+                    "custom_base": result.get("base_commit"),
                 })
                 write_state(root, state)
             if not installed:
