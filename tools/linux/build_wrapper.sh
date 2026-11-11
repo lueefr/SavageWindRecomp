@@ -40,7 +40,7 @@ done
 patchelf --set-rpath '$ORIGIN/../lib' "$APPDIR/usr/bin/hactool"
 cp wrapper/__init__.py wrapper/core.py wrapper/build_progress.py wrapper/launch.py wrapper/gtk_ui.py \
     wrapper/migration.py wrapper/rollback.py wrapper/pr_build.py wrapper/deps.py wrapper/i18n.py \
-    wrapper/updates.py wrapper/runtime_tracking.py "$APPDIR/usr/share/wrapper/"
+    wrapper/updates.py wrapper/runtime_tracking.py wrapper/pause.py "$APPDIR/usr/share/wrapper/"
 cp tools/linux/wrapper_AppRun "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
 cp tools/linux/wrapper.desktop "$APPDIR/savagewind-portable.desktop"
