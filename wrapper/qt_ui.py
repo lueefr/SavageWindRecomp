@@ -174,7 +174,7 @@ class Window(QWidget):
         self.play_button.clicked.connect(self.play_existing)
         mode_actions.addWidget(self.play_button)
         self.build_button = QPushButton()
-        self.label(self.build_button, "Build AppImage only")
+        self.label(self.build_button, "Build AppImage")
         self.build_button.clicked.connect(self.build_image)
         mode_actions.addWidget(self.build_button)
         self.native_button = QPushButton()
@@ -599,7 +599,7 @@ class Window(QWidget):
                 _, message, answer, gate = event
                 # A modal question alone is shown; declining must not reveal the installer.
                 parent = self if self.isVisible() else None
-                response = QMessageBox.question(parent, "Savage Wind", progress_text(message, self.language),
+                response = QMessageBox.question(parent, "Savage Wind", progress_text(tr(message, self.language), self.language),
                                                 QMessageBox.StandardButton.Yes |
                                                 QMessageBox.StandardButton.No,
                                                 QMessageBox.StandardButton.No)
