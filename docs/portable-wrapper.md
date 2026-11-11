@@ -48,6 +48,14 @@ The wrapper sets `SAVAGEWIND_DATA_ROOT`, `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HO
 
 Previous portable layouts are migrated carefully: `extracted/` becomes `root/`, and previous native libraries and save data are moved to `game/`. Conflicts are treated as errors rather than overwritten blindly. Data outside the portable installation is migrated only with user consent.
 
+## First launch and installed AppImage history
+
+The launcher looks for an existing AppImage before presenting the normal first-run chooser. A recognised official `Savage_Wind-*.AppImage` (or `SavageWind-official.AppImage`) in the same directory is checked against **the SHA-256 and size advertised by upstream GitHub releases**, including older releases. If it matches, it is adopted safely and the actual tag is recorded; an update prompt can then offer the latest release. If no executable can be verified, the chooser defaults to official upstream, with `test` and PR-built alternatives. An unidentified development AppImage is not assigned a made-up commit or executed as a verified official release.
+
+The portable `.sw-wrapper/runtime-history.json` stores the active source, version tag or `test` commit, SHA-256, selected PR revisions and upstream base, the UTC update time, and a history of previous versions. When an automatic update is accepted, its linked changelog is saved to the new history entry. Native build identity is also retained to avoid unnecessary recompilation if `state.json` is lost. A missing state file can be reconstructed from the history **only after hashing and validating the matching on-disk AppImage**.
+
+A declined update keeps the previous AppImage and native game library. Without **Don't ask anymore**, it is prompted again at the next start; opting out is stored per source in `.sw-wrapper/update-prefs.json`. A failed update restores the old executable, native code, state and version history. Deleting the installation retains the audit trail, appends an installation-reset event, clears the active version, and preserves saves and configuration. Neither local file names alone nor an unverified build log are sufficient proof of an official release.
+
 ## Native recompilation and progress
 
 The upstream application performs its own native game-code compilation. The wrapper monitors the upstream process and its `root/.gamebuild/` work files for generated code, modules and compiled objects, while preserving the official toolchain and output.
