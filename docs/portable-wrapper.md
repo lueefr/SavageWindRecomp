@@ -56,6 +56,24 @@ The portable `.sw-wrapper/runtime-history.json` stores the active source, versio
 
 A declined update keeps the previous AppImage and native game library. Without **Don't ask anymore**, it is prompted again at the next start; opting out is stored per source in `.sw-wrapper/update-prefs.json`. A failed update restores the old executable, native code, state and version history. Deleting the installation retains the audit trail, appends an installation-reset event, clears the active version, and preserves saves and configuration. Neither local file names alone nor an unverified build log are sufficient proof of an official release.
 
+## Pause and resume compilation
+
+The **Pause** button in both Qt (KDE) and GTK (GNOME) progress windows
+suspends the active compiler process group with Linux `SIGSTOP`. This applies
+to local `test`/PR AppImage builds (including their Git/Podman build steps)
+and to native-game compilation (`swgame.so`), including tracked child compiler
+process groups. **Resume** sends `SIGCONT` and continues the same build without
+discarding the downloaded sources, temporary build files, or partial compilation
+output. The time spent paused does not count toward source-build ETAs or the
+native compiler's one-hour watchdog.
+
+Pausing is temporary and supported **while the launcher remains running**:
+it is not an on-disk checkpoint or a means to resume after closing the
+launcher, rebooting, or killing the process. Clicking **Cancel** while paused
+first releases the frozen process groups and then proceeds through normal
+cancellation and cleanup. Progress indicators remain frozen while paused.
+The game itself is not suspended by this control.
+
 ## Native recompilation and progress
 
 The upstream application performs its own native game-code compilation. The wrapper monitors the upstream process and its `root/.gamebuild/` work files for generated code, modules and compiled objects, while preserving the official toolchain and output.
