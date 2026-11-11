@@ -62,6 +62,8 @@ jobs:
           ./SavageWind-Portable-x86_64.AppImage --appimage-extract >/dev/null
           test -s squashfs-root/usr/share/wrapper/pr_build.py
           test -s squashfs-root/usr/share/wrapper/i18n.py
+          test -s squashfs-root/usr/share/wrapper/updates.py
+          test -s squashfs-root/usr/share/wrapper/runtime_tracking.py
           test -x squashfs-root/usr/bin/swqt/swqt
 
       - name: Smoke test packaged installer without bundled build tools
