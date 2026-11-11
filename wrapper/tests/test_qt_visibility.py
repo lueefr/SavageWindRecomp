@@ -76,8 +76,7 @@ class HiddenLauncherTests(unittest.TestCase):
                     self.assertIn("Official", button.text())
                     button.click()
                     return 0
-                with mock.patch.object(qt_ui.QMessageBox, "exec",
-                                       autospec=True, side_effect=choose_official):
+                with mock.patch.object(qt_ui.QMessageBox, "exec", choose_official):
                     with mock.patch.object(window, "start") as start:
                         window.prompt_initial_source()
                 self.assertFalse(window.test_branch.isChecked())
@@ -129,8 +128,7 @@ class HiddenLauncherTests(unittest.TestCase):
                     buttons = dialog.findChild(QDialogButtonBox)
                     self.assertTrue(buttons.button(QDialogButtonBox.StandardButton.No).isDefault())
                     return QDialog.DialogCode.Rejected
-                with mock.patch.object(qt_ui.QDialog, "exec", autospec=True,
-                                       side_effect=reject):
+                with mock.patch.object(qt_ui.QDialog, "exec", reject):
                     self.assertEqual(window.update_dialog(data), (False, False))
             finally:
                 window.close()
