@@ -129,3 +129,22 @@ AppImage builds display their **own six-step progress list**: Fetch sources, App
 ## Remove installation but keep saves and configuration
 
 **Delete installation** still requires explicitly entering \`DELETE\` and an exclusive installer lock. It removes game files under \`root/\`/\`extracted/\`, installed official/test/custom AppImages (including old FSR2 artifacts), generated \`swgame.so\`/ID, caches, temporary build data and logs. It **does not delete** \`game/save/\`, \`game/saves/\`, save states, \`game/config/\`, \`game/configs/\`, \`game/profiles/\`, \`game/savagewind.ini\`, compatible configuration files, \`game/.xdg/config/\`, \`game/.xdg/data/\` or the interface's \`.sw-wrapper/gui.json\`. The portable launcher and unrelated files next to it are also retained. If there are symlinks or unexpected file types in deletion targets, reset stops rather than following them. The retained \`game/\` directory can be reused by a fresh installation.
+
+
+## First launch and automatic AppImage updates
+
+On normal startup, the launcher first looks for the selected Savage Wind AppImage. If no AppImage exists, a native source-selection dialog opens with **Official upstream AppImage** as the default. The other choices are **Upstream test branch** and **Build with pull requests**. Choosing PRs opens the Source builds page so individual PRs can be selected. If the game files are already present, the official/test choice immediately installs or builds the AppImage, recompiles native game code with that AppImage, and launches the game. Otherwise, the user first imports their own game files, then compilation and game launch follow. The game's native library cannot be generated without the user's game files.
+
+For an existing installation, the launcher checks updates on each normal startup, separately by source:
+
+- **Official:** compare the currently installed verified AppImage SHA-256 with the latest upstream published AppImage release.
+- **Test:** check the current upstream test branch commit against the installed source commit. No release is required.
+- **Selected PRs:** check the current upstream test base commit and the latest head SHA of every tracked selected PR. New custom builds record the complete PR selection and base commit, not just its hash. Pre-existing custom builds without that metadata require one manual PR rebuild to enable precise update checking.
+
+When changes exist, a native Qt/GTK confirmation dialog shows a short changelog with working GitHub links (releases, commits and PRs). It has **Yes**, **No** (the default) and an initially unchecked **Don't ask anymore** option. A refused update **without** this checkbox reappears at the next launch. Checking the box saves a per-source setting in the portable update-prefs.json file in .sw-wrapper/; prompts for other runtimes remain independent. If the GitHub check fails (for example offline), the previous AppImage launches normally without a network-related native recompilation.
+
+Choosing **No** launches the existing executable with the existing native game library and leaves saves and configs untouched. Choosing **Yes** installs/builds that specific update, recompiles the native game code with the new AppImage and starts the game. A failed update restores the previous AppImage, native library and metadata from the temporary rollback. User save files and configs are not part of that backup.
+
+**Build AppImage** is available only once an AppImage is installed, for explicit replacement/customization. It can fetch the official release, compile upstream test or apply selected PRs. After such a manual build it offers optional native game compilation with a separate default-No confirmation, and does not automatically launch the game. **Recompile game code** is an independent action.
+
+Missing build dependencies are requested only after approving a test/PR update. The installer never changes the host system or fetches build dependencies just to check for updates. Deleting the game installation preserves update notification preferences, as well as saves and settings.
