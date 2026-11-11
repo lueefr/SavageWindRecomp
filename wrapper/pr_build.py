@@ -214,6 +214,9 @@ class SourceTimer:
 def _run(argv, cwd, emit, cancel, logfile, meter=None):
     """Stream build output without executing build scripts on the host."""
     check_cancel(cancel)
+    pause = getattr(cancel, "pause", None)
+    if pause is not None:
+        pause.wait(cancel)
     emit("stage", "Running: " + " ".join(argv[:4]) + "...", None)
     try:
         process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE,
@@ -222,6 +225,12 @@ def _run(argv, cwd, emit, cancel, logfile, meter=None):
                                    env=host_environment())
     except OSError as error:
         raise InstallError(f"Could not start build tool {argv[0]}: {error}") from error
+    if pause is not None:
+        try:
+            pause.attach(process)
+        except OSError:
+            stop_process(process)
+            raise
     pending = bytearray()
     recent = []
     try:
@@ -229,6 +238,8 @@ def _run(argv, cwd, emit, cancel, logfile, meter=None):
             sel.register(process.stdout, selectors.EVENT_READ)
             while sel.get_map():
                 check_cancel(cancel)
+                if pause is not None:
+                    pause.wait(cancel)
                 if meter is not None:
                     meter.tick()
                 for key, _ in sel.select(timeout=0.3):
@@ -259,10 +270,14 @@ def _run(argv, cwd, emit, cancel, logfile, meter=None):
             raise InstallError(f"{argv[0]} exited with code {status}: {detail[:280]}. "
                                "See source-build log for details.")
     except BaseException:
+        if pause is not None:
+            pause.resume()
         if process.poll() is None:
             stop_process(process)
         raise
     finally:
+        if pause is not None:
+            pause.detach(process)
         process.stdout.close()
 
 
@@ -489,7 +504,9 @@ def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
     work.mkdir(exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f"{mode}-build-", dir=work))
     log = work / f"{mode}-build.log"
-    tracker = SourceTimer(root, mode, emit)
+    pause = getattr(cancel, "pause", None)
+    tracker = SourceTimer(root, mode, emit,
+                          clock=pause.clock if pause is not None else time.monotonic)
     try:
         with log.open("w", encoding="utf-8") as output:
             source = stage / "source"
