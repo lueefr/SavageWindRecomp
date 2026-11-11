@@ -83,6 +83,19 @@ class RuntimeTrackingTests(unittest.TestCase):
             os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
             self.assertEqual(core.read_state(root), {})
 
+    def test_native_digest_survives_recovery_without_extra_recompile(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = image(root)
+            saved = state(path)
+            saved["built_digest"] = saved["official_digest"]
+            saved["built_cpu"] = core.cpu_target()
+            core.write_state(root, saved)
+            (root / ".sw-wrapper/state.json").unlink()
+            self.assertEqual(core.read_state(root), saved)
+            self.assertEqual(runtime_tracking.read(root)["current"]["native"]["built_digest"],
+                             saved["built_digest"])
+
     def test_rollback_restores_history_and_original_executable(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -107,7 +120,10 @@ class RuntimeTrackingTests(unittest.TestCase):
             core.write_state(root, state(path))
             core.reset_install(root, "DELETE")
             self.assertFalse(path.exists())
-            self.assertEqual(runtime_tracking.read(root)["current"]["version"], "v1")
+            history = runtime_tracking.read(root)
+            self.assertIsNone(history["current"])
+            self.assertEqual(history["history"][0]["version"], "v1")
+            self.assertEqual(history["history"][-1]["event"], "installation_reset")
             self.assertEqual(core.read_state(root), {})
 
 
