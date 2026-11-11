@@ -1150,6 +1150,111 @@ class Pipeline:
             return installed
         return installed_runtime(root, read_state(root))
 
+    def start_installed(self):
+        """Check the selected runtime for updates before normal gameplay."""
+        from .updates import check_update, suppress, suppressed
+        from .rollback import Rollback
+        from .pr_build import build_test_appimage, build_pr_appimage
+
+        root = self.root
+        state = read_state(root)
+        installed = installed_runtime(root, state)
+        if not installed or not valid_game(game_files(root)):
+            return "setup"
+        source = state.get("runtime_source", "official")
+        update = None
+        if not suppressed(root, source):
+            self.status("stage", "Checking for updates to the selected AppImage...")
+            try:
+                update = check_update(state)
+            except (OSError, ValueError, InstallError, urllib.error.URLError) as error:
+                self.status("log", f"Update check unavailable ({source}): {error}. "
+                            "Using the installed AppImage.")
+        else:
+            self.status("log", f"Update notifications for {source} are disabled.")
+        if update is not None:
+            if self.ask_update is not None:
+                accepted, stop_asking = self.ask_update(update)
+            else:
+                accepted, stop_asking = self.ask(
+                    f"{update['title']}\n"
+                    "An update is available. Update the AppImage and recompile "
+                    "the native game code now?"), False
+            if stop_asking:
+                suppress(root, source)
+                self.status("log", f"User disabled future {source} update prompts.")
+            if accepted:
+                self.status("reveal", "Updating the selected AppImage and game code...")
+                previous = dict(state)
+                rollback = Rollback(root)
+                rollback.begin(previous)
+                try:
+                    if source == "official":
+                        info = update["release"]
+                        installed = (adopt_release(info, root, self.status, self.cancel)
+                                     or download_release(info, root, self.status, self.cancel))
+                        stat = installed.stat()
+                        state.update({
+                            "official_digest": info["digest"],
+                            "official_tag": info["tag"],
+                            "official_size": stat.st_size,
+                            "official_mtime_ns": stat.st_mtime_ns,
+                        })
+                    elif source == "test":
+                        result = build_test_appimage(root, self.status, self.cancel,
+                                                     ask=self.ask)
+                        if result["commit"] != update["commit"]:
+                            raise InstallError("Upstream test changed during the build. "
+                                               "The installed version will be restored.")
+                        installed = result["path"]
+                        state.update({
+                            "test_digest": result["digest"], "test_commit": result["commit"],
+                            "test_size": result["size"],
+                            "test_mtime_ns": result["mtime_ns"],
+                        })
+                    else:
+                        result = build_pr_appimage(root, update["prs"], self.status,
+                                                   self.cancel, ask=self.ask)
+                        if (result.get("base_commit") and
+                                result["base_commit"] != update["base_commit"]):
+                            raise InstallError("Upstream test changed during the PR build. "
+                                               "The installed version will be restored.")
+                        installed = result["path"]
+                        state.update({
+                            "custom_digest": result["digest"],
+                            "custom_selection": result["selection"],
+                            "custom_size": result["size"],
+                            "custom_mtime_ns": result["mtime_ns"],
+                            "custom_prs": update["prs"],
+                            "custom_base": result.get("base_commit", update["base_commit"]),
+                        })
+                    write_state(root, state)
+                    self.status("native-start", "Recompiling the game after updating the AppImage...", None)
+                    build_game(root, installed, self.status, self.cancel)
+                    state["built_digest"] = (state.get("official_digest") if source == "official" else
+                                             state.get("test_digest") if source == "test" else
+                                             state.get("custom_digest"))
+                    state["built_cpu"] = cpu_target()
+                    write_state(root, state)
+                    rollback.commit()
+                    self.status("log", "AppImage and native game code updated successfully.")
+                except BaseException:
+                    rollback.restore()
+                    self.status("log", "Update did not finish; the previous AppImage, "
+                                "native game library and state were restored.")
+                    raise
+                return self.launch_existing(root, installed)
+            self.status("log", "Update declined; launching the existing AppImage unchanged.")
+        if not compiled_code(root):
+            self.status("reveal", "Preparing native game code for the first launch...")
+            build_game(root, installed, self.status, self.cancel)
+            state["built_digest"] = (state.get("official_digest") if source == "official" else
+                                     state.get("test_digest") if source == "test" else
+                                     state.get("custom_digest"))
+            state["built_cpu"] = cpu_target()
+            write_state(root, state)
+        return self.launch_existing(root, installed)
+
     def run(self, source=None):
         # Prevent two GUI instances from replacing the same AppImage or extracted files.
         folder = self.root / ".sw-wrapper"
@@ -1215,6 +1320,8 @@ class Pipeline:
                 write_state(root, state)
         portable_env(root)
         state = read_state(root)
+        if self.mode == "startup":
+            return self.start_installed()
         if self.mode in ("play", "native"):
             if not valid_game(game_files(root)):
                 raise InstallError("No valid game files in root/. Import your own game files first.")
