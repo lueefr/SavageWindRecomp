@@ -13,6 +13,7 @@ from .migration import legacy_folder
 from .i18n import LANGUAGES, get_language, set_language, tr, progress_text
 from .pr_build import open_prs
 from .updates import localized
+from .pause import PauseControl
 
 
 class Window(Gtk.Window):
@@ -21,6 +22,7 @@ class Window(Gtk.Window):
         self.root = Path(root)
         self.events = queue.Queue()
         self.cancel_event = threading.Event()
+        self.pause_control = PauseControl()
         self.running = False
         self.progress_busy = True
         self.language = get_language(self.root)
@@ -221,6 +223,11 @@ class Window(Gtk.Window):
         self.cancel_button = Gtk.Button()
         self.label(self.cancel_button, "Cancel", "set_label")
         self.cancel_button.connect("clicked", self.abort)
+        self.pause_button = Gtk.Button()
+        self.label(self.pause_button, "Pause", "set_label")
+        self.pause_button.connect("clicked", self.toggle_pause)
+        self.pause_button.set_sensitive(False)
+        buttons.pack_start(self.pause_button, False, False, 0)
         buttons.pack_start(self.cancel_button, False, False, 0)
         self.progress_box.pack_start(buttons, False, False, 0)
         scroll = Gtk.ScrolledWindow()
@@ -249,6 +256,8 @@ class Window(Gtk.Window):
         self.set_title(tr("Savage Wind — Installer", self.language))
         for widget, source, method in self.local_labels:
             getattr(widget, method)(tr(source, self.language))
+        self.pause_button.set_label(tr("Resume" if self.pause_control.paused
+                                       else "Pause", self.language))
         for item, source in self.tab_labels:
             self.tabs.set_tab_label_text(item, tr(source, self.language))
         self.mark_step(getattr(self, "_step_current", -1))
@@ -551,8 +560,25 @@ class Window(Gtk.Window):
         dialog.destroy()
         return result == Gtk.ResponseType.YES
 
+    def toggle_pause(self, *_):
+        if not self.running or self.cancel_event.is_set():
+            return
+        try:
+            if self.pause_control.paused:
+                self.pause_control.resume()
+                self.pause_button.set_label(tr("Pause", self.language))
+                self.stage.set_text(tr("Resuming...", self.language))
+            else:
+                self.pause_control.pause()
+                self.pause_button.set_label(tr("Resume", self.language))
+                self.stage.set_text(tr("Paused", self.language))
+        except OSError as error:
+            self.alert(str(error))
+
     def abort(self, *_):
         self.cancel_event.set()
+        self.pause_control.resume()
+        self.pause_button.set_sensitive(False)
         self.cancel_button.set_sensitive(False)
         self.stage.set_text(tr("Cancelling...", self.language))
 
@@ -576,11 +602,15 @@ class Window(Gtk.Window):
             return
         self.running = True
         self.cancel_event = threading.Event()
+        self.pause_control = PauseControl()
+        self.cancel_event.pause = self.pause_control
         self.form.hide()
         self.progress_box.show_all()
         self.back_button.hide()
         self.log_expander.set_expanded(False)
         self.cancel_button.set_sensitive(True)
+        self.pause_button.set_sensitive(True)
+        self.pause_button.set_label(tr("Pause", self.language))
         self.stage.set_text(tr("Preparing...", self.language))
         self.log.get_buffer().set_text("")
         self.live_mark = None
@@ -626,6 +656,10 @@ class Window(Gtk.Window):
                 break
             if event[0] == "event":
                 _, kind, message, fraction = event
+                if self.pause_control.paused:
+                    if kind == "log":
+                        self.append_log(message)
+                    continue
                 if kind == "reveal":
                     self.reveal(message)
                     continue
@@ -704,6 +738,9 @@ class Window(Gtk.Window):
                 self.alert(event[1])
             elif event[0] == "done":
                 self.running = False
+                self.pause_control.resume()
+                self.pause_button.set_sensitive(False)
+                self.pause_button.set_label(tr("Pause", self.language))
                 if event[1] == "launched":
                     Gtk.main_quit()
                 elif event[1] in ("built", "native-built"):
@@ -728,13 +765,16 @@ class Window(Gtk.Window):
                     self.back_button.show()
             elif event[0] == "error":
                 self.running = False
+                self.pause_control.resume()
+                self.pause_button.set_sensitive(False)
+                self.pause_button.set_label(tr("Pause", self.language))
                 self.cancel_button.set_sensitive(False)
                 self.stage.set_text(tr("Could not finish.", self.language))
                 self.back_button.show()
                 self.append_log("ERRO: " + event[1])
                 self.reveal(tr("Could not finish.", self.language))
                 self.alert(event[1])
-        if self.running and self.progress_busy:
+        if self.running and self.progress_busy and not self.pause_control.paused:
             self.bar.pulse()
         return True
 
