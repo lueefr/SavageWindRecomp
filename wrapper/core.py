@@ -301,8 +301,12 @@ def identify_local_appimage(root, emit, cancel):
         identities[(info["digest"], info["size"])] = info
     for candidate in official:
         check_cancel(cancel)
-        info = next((item for (digest, size), item in identities.items()
-                     if size == candidate.stat().st_size and sha256(candidate, cancel) == digest), None)
+        try:
+            size = candidate.stat().st_size
+            digest = sha256(candidate, cancel)
+        except OSError:
+            continue
+        info = identities.get((digest, size))
         if info is None:
             continue
         target = root / "SavageWind-official.AppImage"
