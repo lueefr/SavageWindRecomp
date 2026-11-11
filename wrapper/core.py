@@ -1044,7 +1044,15 @@ class Pipeline:
             from .pr_build import build_pr_appimage, custom_runtime, selection_key
             desired = selection_key(self.prs)
             installed = custom_runtime(root, state)
-            if not installed or state.get("custom_selection") != desired:
+            base_changed = False
+            if installed and state.get("custom_base"):
+                from .pr_build import upstream_test_head
+                try:
+                    base_changed = upstream_test_head() != state["custom_base"]
+                except InstallError as error:
+                    self.status("log", f"Cannot check PR build base: {error}")
+                    base_changed = True
+            if not installed or state.get("custom_selection") != desired or base_changed:
                 if not self.ask("Compile an AppImage using the selected PRs? PR code may be "
                                 "unreviewed. Game code, files and saves will not be modified."):
                     return "setup"
@@ -1057,15 +1065,35 @@ class Pipeline:
                     "custom_prs": [{"number": pr["number"], "sha": pr["sha"]}
                                    for pr in self.prs],
                     "custom_base": result.get("base_commit"),
-                    "custom_prs": [{"number": pr["number"], "sha": pr["sha"]}
-                                   for pr in self.prs],
-                    "custom_base": result.get("base_commit"),
                 })
                 write_state(root, state)
             else:
-                self.status("log", "Selected PRs are unchanged; reusing the AppImage.")
+                if not state.get("custom_prs"):
+                    state["custom_prs"] = [{"number": p["number"], "sha": p["sha"]}
+                                           for p in self.prs]
+                    write_state(root, state)
+                self.status("log", "Selected PRs and upstream base are unchanged; reusing the AppImage.")
+        elif self.prs == []:
+            self.status("stage", "Checking the official Savage Wind release...")
+            remote = fetch_latest()
+            installed = local_release(root, state)
+            if not installed or state.get("official_digest") != remote["digest"]:
+                if not self.ask(f"Download Savage Wind {remote['tag']} from official upstream?"):
+                    return "setup"
+                installed = (adopt_release(remote, root, self.status, self.cancel)
+                             or download_release(remote, root, self.status, self.cancel))
+                stat = installed.stat()
+                state.update({
+                    "official_digest": remote["digest"], "official_tag": remote["tag"],
+                    "official_size": stat.st_size,
+                    "official_mtime_ns": stat.st_mtime_ns,
+                })
+            else:
+                self.status("log", "The official AppImage is already current; reusing it.")
+            state["runtime_source"] = "official"
+            write_state(root, state)
         else:
-            raise InstallError("Select upstream test or at least one PR to build only an AppImage.")
+            raise InstallError("Choose the official release, test branch or a PR selection.")
         self.status("source-finish", f"AppImage ready: {installed.name}", 100)
         self.status("log", "Executable build complete. Native game code and saves are unchanged.")
         return "built"
