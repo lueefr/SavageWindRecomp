@@ -36,7 +36,11 @@ class Window(QWidget):
         self.current_test = state.get("runtime_source") == "test"
         self.has_game = valid_game(self.root / "root")
         self.old_game = valid_game(self.root / "extracted")
-        self.autostart = bool(autoplay and self.has_game and installed_runtime(self.root, state))
+        self.needs_recovery = ((self.root / ".sw-wrapper/rollback").is_dir() or
+                               (self.root / ".sw-wrapper/code-stage").is_file())
+        self.autostart = bool(autoplay and
+                              ((self.has_game and installed_runtime(self.root, state)) or
+                               self.needs_recovery))
         self.setWindowTitle(tr("Savage Wind — Installer", self.language))
         self.resize(750, 680)
         layout = QVBoxLayout(self)
