@@ -37,15 +37,22 @@ class SeparateOperationsTests(unittest.TestCase):
             core.write_state(root, {"built_digest": "old-id", "built_cpu": core.cpu_target()})
             binary = result_image(root, "SavageWind-test.AppImage", "a" * 64, "b" * 40)
             events = []
+            questions = []
+            def consent(message):
+                questions.append(message)
+                return "Recompile the game's native library" not in message
             with mock.patch.object(pr_build, "build_test_appimage", return_value=binary) as build:
                 with mock.patch.object(core, "build_game", side_effect=AssertionError("native build")):
                     with mock.patch.object(core, "portable_env", side_effect=AssertionError("game env")):
                         with mock.patch.object(core.subprocess, "Popen",
                                                side_effect=AssertionError("game launched")):
                             response = core.Pipeline(
-                                root, lambda *x: events.append(x), lambda _: True,
+                                root, lambda *x: events.append(x), consent,
                                 threading.Event(), prs="test", mode="build_only").run()
             self.assertEqual(response, "built")
+            self.assertEqual(len(questions), 2)
+            self.assertIn("Choose No", questions[-1])
+            self.assertFalse(any(x[0] == "native-start" for x in events))
             build.assert_called_once()
             self.assertEqual((root / "game/swgame.so").read_bytes(), b"existing-native")
             self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"do-not-touch")
@@ -64,6 +71,103 @@ class SeparateOperationsTests(unittest.TestCase):
             self.assertEqual(response, "built")
             self.assertFalse((root / "root").exists())
             self.assertFalse((root / "game").exists())
+
+    def test_accept_post_build_recompile_uses_new_appimage_and_keeps_saves(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            installed_game(root)
+            core.write_state(root, {"built_digest": "old-id", "built_cpu": core.cpu_target()})
+            binary = result_image(root, "SavageWind-test.AppImage", "a" * 64, "b" * 40)
+            events = []
+            questions = []
+            def accept(message):
+                questions.append(message)
+                return True
+            def native(root_, executable, emit, cancel):
+                self.assertEqual(executable, binary["path"])
+                self.assertEqual((root_ / "game/save/slot.sav").read_bytes(), b"do-not-touch")
+                (root_ / "game/swgame.so").write_bytes(b"new-native")
+                (root_ / "game/swgame.so.id").write_bytes(b"new-id")
+            with mock.patch.object(pr_build, "build_test_appimage", return_value=binary):
+                with mock.patch.object(core, "build_game", side_effect=native) as rebuild:
+                    with mock.patch.object(core.subprocess, "Popen",
+                                           side_effect=AssertionError("game must not auto-launch")):
+                        response = core.Pipeline(
+                            root, lambda *x: events.append(x), accept,
+                            threading.Event(), prs="test", mode="build_only").run()
+            self.assertEqual(response, "native-built")
+            self.assertEqual(len(questions), 2)
+            self.assertIn("Recompile the game's native library", questions[-1])
+            self.assertIn("Saves, settings and extracted game files", questions[-1])
+            rebuild.assert_called_once()
+            self.assertEqual((root / "game/swgame.so").read_bytes(), b"new-native")
+            self.assertEqual((root / "game/swgame.so.id").read_bytes(), b"new-id")
+            self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"do-not-touch")
+            self.assertEqual(core.read_state(root)["built_digest"], "a" * 64)
+            stages = [event[0] for event in events]
+            self.assertLess(stages.index("source-finish"), stages.index("native-start"))
+
+    def test_accept_post_pr_build_uses_custom_appimage(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            installed_game(root)
+            selection = [{"number": 636, "sha": "c" * 40}]
+            binary = result_image(root, "SavageWind-custom.AppImage", "f" * 64,
+                                  selection=pr_build.selection_key(selection))
+            questions = []
+            def accept(message):
+                questions.append(message)
+                return True
+            with mock.patch.object(pr_build, "build_pr_appimage", return_value=binary):
+                with mock.patch.object(core, "build_game") as native:
+                    response = core.Pipeline(
+                        root, lambda *_: None, accept, threading.Event(),
+                        prs=selection, mode="build_only").run()
+            self.assertEqual(response, "native-built")
+            native.assert_called_once()
+            self.assertEqual(native.call_args.args[:2], (root, binary["path"]))
+            self.assertEqual(len(questions), 2)
+            self.assertIn("Recompile", questions[-1])
+            self.assertEqual(core.read_state(root)["runtime_source"], "custom")
+            self.assertEqual(core.read_state(root)["built_digest"], "f" * 64)
+            self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"do-not-touch")
+
+    def test_no_game_files_never_asks_for_native_recompile(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            built = result_image(root, "SavageWind-test.AppImage", "c" * 64, "d" * 40)
+            questions = []
+            messages = []
+            def accept(message):
+                questions.append(message)
+                return True
+            with mock.patch.object(pr_build, "build_test_appimage", return_value=built):
+                response = core.Pipeline(root, lambda *m: messages.append(m), accept,
+                                         threading.Event(), prs="test",
+                                         mode="build_only").run()
+            self.assertEqual(response, "built")
+            self.assertEqual(len(questions), 1)
+            self.assertFalse((root / "game").exists())
+            self.assertTrue(any("was not offered" in e[1] for e in messages if e[0] == "log"))
+
+    def test_failed_optional_native_build_retains_successful_appimage(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            installed_game(root)
+            core.write_state(root, {"built_digest": "original"})
+            built = result_image(root, "SavageWind-test.AppImage", "d" * 64, "e" * 40)
+            with mock.patch.object(pr_build, "build_test_appimage", return_value=built):
+                with mock.patch.object(core, "build_game",
+                                       side_effect=core.InstallError("native failed")):
+                    with self.assertRaisesRegex(core.InstallError, "native failed"):
+                        core.Pipeline(root, lambda *_: None, lambda _: True,
+                                      threading.Event(), prs="test",
+                                      mode="build_only").run()
+            self.assertTrue(built["path"].is_file())
+            self.assertEqual(core.read_state(root)["test_digest"], "d" * 64)
+            self.assertEqual(core.read_state(root)["built_digest"], "original")
+            self.assertEqual((root / "game/swgame.so").read_bytes(), b"existing-native")
+            self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"do-not-touch")
 
     def test_explicit_native_build_may_compile_test_first(self):
         with tempfile.TemporaryDirectory() as folder:
