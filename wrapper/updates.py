@@ -1,4 +1,5 @@
 """Per-source startup update checks with short, linked GitHub changelogs."""
+from concurrent.futures import ThreadPoolExecutor
 import html
 import json
 import os
@@ -150,9 +151,14 @@ def check_update(state):
         if not changes:
             changes.append("A branch " + _anchor(SITE + "/commits/test", "test")
                            + " recebeu alterações.")
-    for entry in selected:
+    # Independent PR lookups run concurrently so startup latency does not
+    # grow linearly with the number of selected pull requests.
+    with ThreadPoolExecutor(max_workers=min(4, len(selected))) as pool:
+        records = list(pool.map(lambda pr: _github_json(
+            "/pulls/" + str(pr["number"])), selected))
+    compared = 0
+    for entry, info in zip(selected, records):
         number = entry["number"]
-        info = _github_json("/pulls/" + str(number))
         head = (info.get("head") or {}).get("sha")
         base = (info.get("base") or {}).get("ref")
         if not isinstance(head, str) or not SHA.fullmatch(head) or base != "test":
@@ -163,7 +169,9 @@ def check_update(state):
             changes.append(_anchor(SITE + "/pull/" + str(number), label)
                            + " (" + html.escape(entry["sha"][:8])
                            + " → " + html.escape(head[:8]) + ")")
-            changes.extend(_commit_changes(entry["sha"], head)[:2])
+            if compared < 2:
+                changes.extend(_commit_changes(entry["sha"], head)[:2])
+                compared += 1
     if not base_changed and updated == selected:
         return None
     desc = _changes_html(
