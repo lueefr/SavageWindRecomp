@@ -292,7 +292,7 @@ def reset_install(root, confirmation):
                     continue
                 targets.append(child)
         for child in metadata.iterdir():
-            if child.name not in ("gui.json", "operation.lock"):
+            if child.name not in ("gui.json", "update-prefs.json", "operation.lock"):
                 targets.append(child)
         # Check every affected location before making any destructive changes.
         for target in targets:
