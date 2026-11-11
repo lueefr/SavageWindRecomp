@@ -16,6 +16,7 @@ from .migration import legacy_folder
 from .i18n import LANGUAGES, get_language, set_language, tr, progress_text
 from .pr_build import open_prs
 from .updates import localized
+from .pause import PauseControl
 
 
 class Window(QWidget):
@@ -24,6 +25,7 @@ class Window(QWidget):
         self.root = Path(root)
         self.events = queue.Queue()
         self.cancel_event = threading.Event()
+        self.pause_control = PauseControl()
         self.running = False
         self.language = get_language(self.root)
         self.local_labels = []
@@ -230,6 +232,11 @@ class Window(QWidget):
         self.cancel_button = QPushButton()
         self.label(self.cancel_button, "Cancel")
         self.cancel_button.clicked.connect(self.abort)
+        self.pause_button = QPushButton()
+        self.label(self.pause_button, "Pause")
+        self.pause_button.clicked.connect(self.toggle_pause)
+        self.pause_button.setEnabled(False)
+        buttons.addWidget(self.pause_button)
         buttons.addWidget(self.cancel_button)
         tasks.addLayout(buttons)
         self.log = QPlainTextEdit()
@@ -262,6 +269,8 @@ class Window(QWidget):
         self.setWindowTitle(tr("Savage Wind — Installer", self.language))
         for widget, message, setter in self.local_labels:
             getattr(widget, setter)(tr(message, self.language))
+        self.pause_button.setText(tr("Resume" if self.pause_control.paused
+                                     else "Pause", self.language))
         for page, message in self.tab_labels:
             self.tabs.setTabText(self.tabs.indexOf(page), tr(message, self.language))
         self.mark_step(getattr(self, "_step_current", -1))
@@ -539,8 +548,25 @@ class Window(QWidget):
         self.log.setVisible(hidden)
         self.toggle.setText(tr("Hide log" if hidden else "Show log", self.language))
 
+    def toggle_pause(self):
+        if not self.running or self.cancel_event.is_set():
+            return
+        try:
+            if self.pause_control.paused:
+                self.pause_control.resume()
+                self.pause_button.setText(tr("Pause", self.language))
+                self.stage.setText(tr("Resuming...", self.language))
+            else:
+                self.pause_control.pause()
+                self.pause_button.setText(tr("Resume", self.language))
+                self.stage.setText(tr("Paused", self.language))
+        except OSError as error:
+            QMessageBox.critical(self, "Savage Wind", str(error))
+
     def abort(self):
         self.cancel_event.set()
+        self.pause_control.resume()
+        self.pause_button.setEnabled(False)
         self.cancel_button.setEnabled(False)
         self.stage.setText(tr("Cancelling...", self.language))
 
@@ -566,11 +592,15 @@ class Window(QWidget):
             QMessageBox.warning(self, tr("Invalid game files", self.language), tr("Please select a folder containing exefs/ and romfs/.", self.language))
             return
         self.cancel_event = threading.Event()
+        self.pause_control = PauseControl()
+        self.cancel_event.pause = self.pause_control
         self.running = True
         self.form.hide()
         self.progress_box.show()
         self.back_button.hide()
         self.cancel_button.setEnabled(True)
+        self.pause_button.setEnabled(True)
+        self.pause_button.setText(tr("Pause", self.language))
         self.bar.setRange(0, 0)
         self.log.clear()
         self.live_start = None
@@ -620,6 +650,10 @@ class Window(QWidget):
                 break
             if event[0] == "event":
                 _, kind, message, fraction = event
+                if self.pause_control.paused:
+                    if kind == "log":
+                        self.append_log(message)
+                    continue
                 if kind == "reveal":
                     self.reveal(message)
                     continue
@@ -703,6 +737,9 @@ class Window(QWidget):
                 QMessageBox.warning(self, "GitHub", event[1])
             elif event[0] == "done":
                 self.running = False
+                self.pause_control.resume()
+                self.pause_button.setEnabled(False)
+                self.pause_button.setText(tr("Pause", self.language))
                 if event[1] == "launched":
                     QApplication.instance().quit()
                 elif event[1] in ("built", "native-built"):
@@ -728,6 +765,9 @@ class Window(QWidget):
                     self.back_button.show()
             elif event[0] == "error":
                 self.running = False
+                self.pause_control.resume()
+                self.pause_button.setEnabled(False)
+                self.pause_button.setText(tr("Pause", self.language))
                 self.cancel_button.setEnabled(False)
                 self.stage.setText(tr("Could not finish.", self.language))
                 self.back_button.show()
