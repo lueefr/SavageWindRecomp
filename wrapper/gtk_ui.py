@@ -505,12 +505,8 @@ class Window(Gtk.Window):
 
     def build_image(self, *_):
         selection = self.selected_source()
-        if selection is None:
-            return
-        if selection == []:
-            self.alert(tr("Select test or pull requests to compile an AppImage.", self.language))
-            return
-        self.start(None, mode="build_only", prs=selection)
+        if selection is not None:
+            self.start(None, mode="build_only", prs=selection)
 
     def recompile_game(self, *_):
         if self.custom.get_active() and not self.selected_prs() and self.current_custom:
