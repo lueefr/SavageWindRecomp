@@ -499,6 +499,7 @@ def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
             _run(["git", "clone", "--progress", "--no-tags", "--single-branch", "--branch", "test",
                   UPSTREAM, str(source)], stage, emit, cancel, output, meter=tracker)
             tracker.step(1)
+            base_commit = _capture(["git", "rev-parse", "HEAD"], source)
             for pr in prs or []:
                 check_cancel(cancel)
                 number = pr["number"]
@@ -563,6 +564,7 @@ def build_upstream_appimage(root, emit, cancel, ask=None, prs=None):
                  else "Custom AppImage built.", 100)
             return {"path": dest, "digest": digest, "size": stat.st_size,
                     "mtime_ns": stat.st_mtime_ns, "commit": commit,
+                    "base_commit": base_commit,
                     "selection": f"test:{commit}" if prs is None else selection_key(prs)}
     finally:
         # A cleanup failure is not a build failure; the AppImage may be complete.
