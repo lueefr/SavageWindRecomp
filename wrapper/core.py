@@ -496,6 +496,9 @@ def download_release(info, root, emit, cancel):
         with os.fdopen(fd, "wb", buffering=CHUNK) as dest, urllib.request.urlopen(
                 request, timeout=20, context=tls_context()) as src:
             while data := src.read(CHUNK):
+                pause = getattr(cancel, "pause", None)
+                if pause is not None:
+                    pause.wait(cancel)
                 check_cancel(cancel)
                 transferred += len(data)
                 if transferred > info["size"]:
@@ -1107,6 +1110,9 @@ class Pipeline:
         self._last_log = 0.0
 
     def status(self, kind, message, fraction=None):
+        pause = getattr(self.cancel, "pause", None)
+        if pause is not None:
+            pause.wait(self.cancel)
         check_cancel(self.cancel)
         if kind in ("log", "stage"):
             # Keep every important line on disk, but bound the UI event rate.
