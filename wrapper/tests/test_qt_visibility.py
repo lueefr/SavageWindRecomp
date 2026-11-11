@@ -86,6 +86,33 @@ class HiddenLauncherTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_pause_button_toggles_resume_and_cancel_unfreezes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            window = qt_ui.Window(root, autoplay=False)
+            try:
+                window.show()
+                self.assertFalse(window.pause_button.isEnabled())
+                window.running = True
+                window.pause_button.setEnabled(True)
+                window.toggle_pause()
+                self.assertTrue(window.pause_control.paused)
+                self.assertEqual(window.pause_button.text(), "Resume")
+                self.assertEqual(window.stage.text(), "Paused")
+                window.toggle_pause()
+                self.assertFalse(window.pause_control.paused)
+                self.assertEqual(window.pause_button.text(), "Pause")
+                window.toggle_pause()
+                window.abort()
+                self.assertFalse(window.pause_control.paused)
+                self.assertFalse(window.pause_button.isEnabled())
+                self.assertTrue(window.cancel_event.is_set())
+                window.running = False
+            finally:
+                window.running = False
+                window.pause_control.resume()
+                window.close()
+
     def test_build_button_only_shows_when_installed_runtime_exists(self):
         from wrapper.core import write_state
         with tempfile.TemporaryDirectory() as folder:
