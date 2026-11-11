@@ -204,10 +204,11 @@ def read_state(root):
             state = json.load(source)
         return state if isinstance(state, dict) else {}
     except (OSError, ValueError):
-        return {}
+        from .runtime_tracking import recover
+        return recover(root)
 
 
-def write_state(root, state):
+def write_state(root, state, changes=None):
     directory = Path(root) / ".sw-wrapper"
     directory.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(prefix=".state-", dir=directory)
@@ -218,6 +219,8 @@ def write_state(root, state):
             target.flush()
             os.fsync(target.fileno())
         os.replace(temp, directory / "state.json")
+        from .runtime_tracking import record
+        record(root, state, changes=changes)
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
@@ -292,7 +295,7 @@ def reset_install(root, confirmation):
                     continue
                 targets.append(child)
         for child in metadata.iterdir():
-            if child.name not in ("gui.json", "update-prefs.json", "operation.lock"):
+            if child.name not in ("gui.json", "update-prefs.json", "runtime-history.json", "operation.lock"):
                 targets.append(child)
         # Check every affected location before making any destructive changes.
         for target in targets:
@@ -1269,7 +1272,7 @@ class Pipeline:
                                              state.get("test_digest") if source == "test" else
                                              state.get("custom_digest"))
                     state["built_cpu"] = cpu_target()
-                    write_state(root, state)
+                    write_state(root, state, changes=update)
                     rollback.commit()
                     self.status("log", "AppImage and native game code updated successfully.")
                 except BaseException:
