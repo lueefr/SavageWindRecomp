@@ -32,8 +32,9 @@ class HiddenLauncherTests(unittest.TestCase):
             self.installed(root)
             QTimer.singleShot(0, self.app.quit)
             with mock.patch.object(qt_ui.Window, "start", autospec=True):
-                with mock.patch.object(qt_ui.Window, "show", autospec=True) as show:
-                    result = qt_ui.run(root, autoplay=True)
+                with mock.patch.object(qt_ui.Window, "prompt_initial_source", autospec=True):
+                    with mock.patch.object(qt_ui.Window, "show", autospec=True) as show:
+                        result = qt_ui.run(root, autoplay=True)
             self.assertEqual(result, 0)
             show.assert_called_once()
 
@@ -57,10 +58,82 @@ class HiddenLauncherTests(unittest.TestCase):
     def test_new_install_shows_form(self):
         with tempfile.TemporaryDirectory() as folder:
             QTimer.singleShot(0, self.app.quit)
-            with mock.patch.object(qt_ui.Window, "show", autospec=True) as show:
-                result = qt_ui.run(Path(folder), autoplay=True)
+            with mock.patch.object(qt_ui.Window, "prompt_initial_source", autospec=True):
+                with mock.patch.object(qt_ui.Window, "show", autospec=True) as show:
+                    result = qt_ui.run(Path(folder), autoplay=True)
             self.assertEqual(result, 0)
             show.assert_called_once()
+
+    def test_initial_chooser_defaults_to_official_and_starts_install_flow(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.installed(root)
+            window = qt_ui.Window(root, autoplay=False)
+            try:
+                def choose_official(box):
+                    self.assertIn("No Savage Wind AppImage", box.text())
+                    button = box.defaultButton()
+                    self.assertIn("Official", button.text())
+                    button.click()
+                    return 0
+                with mock.patch.object(qt_ui.QMessageBox, "exec",
+                                       autospec=True, side_effect=choose_official):
+                    with mock.patch.object(window, "start") as start:
+                        window.prompt_initial_source()
+                self.assertFalse(window.test_branch.isChecked())
+                self.assertFalse(window.custom.isChecked())
+                self.assertTrue(window.prs_changed)
+                start.assert_called_once_with("__reuse__")
+            finally:
+                window.close()
+
+    def test_build_button_only_shows_when_installed_runtime_exists(self):
+        from wrapper.core import write_state
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            self.installed(root)
+            window = qt_ui.Window(root, autoplay=False)
+            try:
+                window.show()
+                window.game_status()
+                self.assertFalse(window.build_button.isVisible())
+                self.assertTrue(window.install.isVisible())
+                image = root / "SavageWind-official.AppImage"
+                image.write_bytes(b"\x7fELF" + b"x" * 1024)
+                st = image.stat()
+                write_state(root, {"runtime_source": "official",
+                                   "official_digest": "1" * 64,
+                                   "official_size": st.st_size,
+                                   "official_mtime_ns": st.st_mtime_ns})
+                window.game_status()
+                self.assertTrue(window.build_button.isVisible())
+                self.assertFalse(window.install.isVisible())
+            finally:
+                window.close()
+
+    def test_update_dialog_has_clickable_links_and_default_opt_out_unchecked(self):
+        from PySide6.QtWidgets import QDialog, QTextBrowser, QCheckBox, QDialogButtonBox
+        with tempfile.TemporaryDirectory() as folder:
+            window = qt_ui.Window(Path(folder), autoplay=False)
+            try:
+                data = {
+                    "title": "Savage Wind update",
+                    "html": "<b>Updates</b><p><a href='https://github.com/"
+                            "Revivedx/SavageWindRecomp/pull/636'>PR #636</a></p>"}
+                def reject(dialog):
+                    browser = dialog.findChild(QTextBrowser)
+                    self.assertTrue(browser.openExternalLinks())
+                    self.assertIn("PR #636", browser.toPlainText())
+                    optout = dialog.findChild(QCheckBox)
+                    self.assertFalse(optout.isChecked())
+                    buttons = dialog.findChild(QDialogButtonBox)
+                    self.assertTrue(buttons.button(QDialogButtonBox.StandardButton.No).isDefault())
+                    return QDialog.DialogCode.Rejected
+                with mock.patch.object(qt_ui.QDialog, "exec", autospec=True,
+                                       side_effect=reject):
+                    self.assertEqual(window.update_dialog(data), (False, False))
+            finally:
+                window.close()
 
     def test_existing_files_choose_reuse_without_import(self):
         with tempfile.TemporaryDirectory() as folder:
