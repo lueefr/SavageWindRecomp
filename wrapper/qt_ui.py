@@ -7,7 +7,8 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QLineEdit, QPushButton,
     QVBoxLayout, QHBoxLayout, QGroupBox, QFileDialog, QProgressBar, QPlainTextEdit,
-    QMessageBox, QListWidget, QListWidgetItem, QTabWidget, QComboBox, QCheckBox, QInputDialog)
+    QMessageBox, QListWidget, QListWidgetItem, QTabWidget, QComboBox, QCheckBox, QInputDialog,
+    QDialog, QDialogButtonBox, QTextBrowser)
 
 from .core import (Pipeline, Cancelled, InstallError, valid_game, compiled_code,
                    read_state, installed_runtime, reset_install)
@@ -241,7 +242,9 @@ class Window(QWidget):
         self.game_status()
         if self.autostart:
             self.form.hide()
-            QTimer.singleShot(0, lambda: self.start(None))
+            QTimer.singleShot(0, lambda: self.start(None, mode="startup"))
+        elif autoplay and not installed_runtime(self.root, state):
+            QTimer.singleShot(0, self.prompt_initial_source)
 
     def label(self, widget, message, setter="setText"):
         self.local_labels.append((widget, message, setter))
@@ -274,6 +277,61 @@ class Window(QWidget):
         if index in (0, 1):
             self.source_tab = index
 
+    def prompt_initial_source(self):
+        if self.running or installed_runtime(self.root, read_state(self.root)):
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle(tr("Choose AppImage source", self.language))
+        box.setText(tr("No Savage Wind AppImage is installed. Which version would you like to use?",
+                       self.language))
+        box.setInformativeText(tr("The official release is recommended. To use PRs, select them on the Source builds page.",
+                                   self.language))
+        official = box.addButton(tr("Official upstream AppImage", self.language),
+                                 QMessageBox.ButtonRole.AcceptRole)
+        test = box.addButton(tr("Upstream test branch", self.language),
+                             QMessageBox.ButtonRole.AcceptRole)
+        prs = box.addButton(tr("Build with pull requests", self.language),
+                            QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(official)
+        box.exec()
+        selected = box.clickedButton()
+        if selected not in (official, test, prs):
+            return
+        self.test_branch.setChecked(selected is test)
+        self.custom.setChecked(selected is prs)
+        self.prs_changed = True
+        if selected is prs:
+            self.tabs.setCurrentIndex(self.tabs.indexOf(self.runtime_box))
+            self.form.show()
+            self.fetch_prs()
+            return
+        if valid_game(self.root / "root"):
+            self.start("__reuse__")
+        else:
+            self.form.show()
+            self.tabs.setCurrentIndex(0)
+
+    def update_dialog(self, info):
+        dialog = QDialog(self if self.isVisible() else None)
+        dialog.setWindowTitle(info["title"])
+        dialog.resize(550, 385)
+        layout = QVBoxLayout(dialog)
+        details = QTextBrowser(dialog)
+        details.setOpenExternalLinks(True)
+        details.setHtml(info["html"])
+        layout.addWidget(details, 1)
+        ignore = QCheckBox(tr("Don't ask anymore", self.language), dialog)
+        layout.addWidget(ignore)
+        actions = QDialogButtonBox(QDialogButtonBox.StandardButton.Yes |
+                                   QDialogButtonBox.StandardButton.No, parent=dialog)
+        actions.accepted.connect(dialog.accept)
+        actions.rejected.connect(dialog.reject)
+        actions.button(QDialogButtonBox.StandardButton.No).setDefault(True)
+        layout.addWidget(actions)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        return accepted, ignore.isChecked()
+
     def selected_prs(self):
         return [item.data(Qt.ItemDataRole.UserRole)
                 for index in range(self.pr_list.count())
@@ -294,11 +352,12 @@ class Window(QWidget):
     def game_status(self):
         state = read_state(self.root)
         existing = valid_game(self.root / "root") or valid_game(self.root / "extracted")
-        self.install.setVisible(not existing)
-        self.play_button.setVisible(existing)
-        self.play_button.setEnabled(existing and compiled_code(self.root))
-        self.native_button.setVisible(existing)
-        self.build_button.setVisible(True)
+        runtime = installed_runtime(self.root, state)
+        self.install.setVisible(not existing or not runtime)
+        self.play_button.setVisible(existing and bool(runtime))
+        self.play_button.setEnabled(existing and bool(runtime) and compiled_code(self.root))
+        self.native_button.setVisible(existing and bool(runtime))
+        self.build_button.setVisible(bool(runtime))
         if existing:
             where = self.root / ("root" if valid_game(self.root / "root") else "extracted")
             self.source.setText(str(where))
@@ -528,12 +587,21 @@ class Window(QWidget):
                 if self.cancel_event.is_set():
                     raise Cancelled()
             return bool(answer and answer[0])
+        def ask_update(info):
+            gate = threading.Event()
+            answer = []
+            self.events.put(("update-question", info, answer, gate))
+            while not gate.wait(0.1):
+                if self.cancel_event.is_set():
+                    raise Cancelled()
+            return answer[0] if answer else (False, False)
         if mode == "install":
             prs = ("test" if self.test_branch.isChecked() else
                    self.selected_prs() if self.custom.isChecked() else []) if self.prs_changed else None
         def work():
             try:
-                result = Pipeline(self.root, emit, ask, self.cancel_event, prs=prs, mode=mode).run(source)
+                result = Pipeline(self.root, emit, ask, self.cancel_event, prs=prs,
+                                  mode=mode, ask_update=ask_update).run(source)
                 self.events.put(("done", result))
             except Cancelled:
                 self.events.put(("done", "cancelled"))
@@ -595,6 +663,12 @@ class Window(QWidget):
                 else:
                     self.bar.setRange(0, 100)
                     self.bar.setValue(int(fraction))
+            elif event[0] == "update-question":
+                _, info, answer, gate = event
+                try:
+                    answer.append(self.update_dialog(info))
+                finally:
+                    gate.set()
             elif event[0] == "question":
                 _, message, answer, gate = event
                 # A modal question alone is shown; declining must not reveal the installer.
