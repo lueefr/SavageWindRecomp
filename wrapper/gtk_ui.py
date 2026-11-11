@@ -741,7 +741,11 @@ def run(root, selftest=False, autoplay=True):
     if selftest:
         return 0
     window = Window(root)
-    autostart = bool(autoplay and valid_game(Path(root) / "root") and installed_runtime(root, read_state(root)))
+    needs_recovery = ((Path(root) / ".sw-wrapper/rollback").is_dir() or
+                      (Path(root) / ".sw-wrapper/code-stage").is_file())
+    autostart = bool(autoplay and
+                     ((valid_game(Path(root) / "root") and
+                       installed_runtime(root, read_state(root))) or needs_recovery))
     if autostart:
         # Never show an empty installer before checking the official release.
         GLib.idle_add(lambda: window.start(None, mode="startup") or False)
