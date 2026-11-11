@@ -169,6 +169,36 @@ class SeparateOperationsTests(unittest.TestCase):
             self.assertEqual((root / "game/swgame.so").read_bytes(), b"existing-native")
             self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"do-not-touch")
 
+    def test_manual_official_appimage_reuses_release_and_asks_before_native(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            installed_game(root)
+            binary = result_image(root, "SavageWind-official.AppImage", "e" * 64)
+            core.write_state(root, {
+                "runtime_source": "official", "official_digest": "e" * 64,
+                "official_size": binary["size"],
+                "official_mtime_ns": binary["mtime_ns"],
+                "built_digest": "old-native", "built_cpu": core.cpu_target(),
+            })
+            latest = {"tag": "v2", "digest": "e" * 64}
+            asked = []
+            def decline(message):
+                asked.append(message)
+                return False
+            with mock.patch.object(core, "fetch_latest", return_value=latest):
+                with mock.patch.object(core, "build_game",
+                                       side_effect=AssertionError("unexpected native rebuild")):
+                    with mock.patch.object(core.subprocess, "Popen",
+                                           side_effect=AssertionError("unexpected launch")):
+                        response = core.Pipeline(
+                            root, lambda *_: None, decline, threading.Event(),
+                            prs=[], mode="build_only").run()
+            self.assertEqual(response, "built")
+            self.assertEqual(len(asked), 1)
+            self.assertIn("Recompile the game's native library", asked[0])
+            self.assertEqual((root / "game/swgame.so").read_bytes(), b"existing-native")
+            self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"do-not-touch")
+
     def test_explicit_native_build_may_compile_test_first(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
