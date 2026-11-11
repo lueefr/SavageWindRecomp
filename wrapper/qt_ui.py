@@ -15,6 +15,7 @@ from .core import (Pipeline, Cancelled, InstallError, valid_game, compiled_code,
 from .migration import legacy_folder
 from .i18n import LANGUAGES, get_language, set_language, tr, progress_text
 from .pr_build import open_prs
+from .updates import localized
 
 
 class Window(QWidget):
@@ -313,6 +314,7 @@ class Window(QWidget):
             self.tabs.setCurrentIndex(0)
 
     def update_dialog(self, info):
+        info = localized(info, self.language)
         dialog = QDialog(self if self.isVisible() else None)
         dialog.setWindowTitle(info["title"])
         dialog.resize(550, 385)
