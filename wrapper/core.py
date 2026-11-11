@@ -240,6 +240,106 @@ def local_release(root, state):
     return path
 
 
+def _local_images(root):
+    """Only inspect AppImages in the portable directory, never the whole home."""
+    root = Path(root)
+    paths = [root / f"SavageWind-{name}.AppImage"
+             for name in ("official", "test", "custom")]
+    paths.extend(sorted(root.glob("Savage_Wind-*.AppImage")))
+    for path in dict.fromkeys(paths):
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size < 1024 * 1024:
+                continue
+            with path.open("rb") as file:
+                if file.read(4) == b"\x7fELF":
+                    yield path
+        except OSError:
+            continue
+
+
+def untracked_appimage(root):
+    """Signal that an existing runtime needs source identification on first use."""
+    return next(_local_images(root), None) is not None
+
+
+def identify_local_appimage(root, emit, cancel):
+    """Adopt an existing official AppImage only after checking upstream SHA-256.
+
+    Development builds without original revision metadata are deliberately not
+    treated as verified official releases or assigned invented commit hashes.
+    """
+    root = Path(root)
+    state = read_state(root)
+    if installed_runtime(root, state):
+        return installed_runtime(root, state)
+    candidates = list(_local_images(root))
+    official = [p for p in candidates if p.name == "SavageWind-official.AppImage"
+                or p.name.startswith("Savage_Wind-")]
+    if not official:
+        if candidates:
+            emit("log", "Local test/PR AppImage detected without verified source "
+                 "metadata. Select its source and rebuild to restore tracking.", None)
+        return None
+    request = urllib.request.Request(RELEASES, headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "SavageWindPortable/1.0",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=10, context=tls_context()) as response:
+            releases = json.load(response)
+        if not isinstance(releases, list):
+            raise InstallError("Invalid upstream release catalogue.")
+    except (urllib.error.URLError, OSError, ValueError, InstallError) as error:
+        emit("log", f"Cannot identify the untracked AppImage while offline: {error}", None)
+        return None
+    identities = {}
+    for release in releases:
+        try:
+            info = latest([release])
+        except (InstallError, KeyError, TypeError, ValueError):
+            continue
+        identities[(info["digest"], info["size"])] = info
+    for candidate in official:
+        check_cancel(cancel)
+        info = next((item for (digest, size), item in identities.items()
+                     if size == candidate.stat().st_size and sha256(candidate, cancel) == digest), None)
+        if info is None:
+            continue
+        target = root / "SavageWind-official.AppImage"
+        if target.is_symlink():
+            raise InstallError("The official AppImage destination is a symbolic link.")
+        if candidate != target:
+            from shutil import copyfileobj
+            fd, temp = tempfile.mkstemp(prefix=".adopt-", dir=root / ".sw-wrapper")
+            try:
+                with os.fdopen(fd, "wb") as output, candidate.open("rb") as source:
+                    copyfileobj(source, output, CHUNK)
+                    output.flush()
+                    os.fsync(output.fileno())
+                if sha256(temp, cancel) != info["digest"]:
+                    raise InstallError("Local AppImage changed during verification.")
+                os.chmod(temp, 0o755)
+                os.replace(temp, target)
+            finally:
+                if os.path.exists(temp):
+                    os.unlink(temp)
+        stat = target.stat()
+        state.update({
+            "runtime_source": "official",
+            "official_digest": info["digest"],
+            "official_tag": info["tag"],
+            "official_size": stat.st_size,
+            "official_mtime_ns": stat.st_mtime_ns,
+        })
+        write_state(root, state)
+        emit("log", f"Identified installed official AppImage: {info['tag']} "
+             f"(SHA-256 {info['digest'][:12]}).", None)
+        return target
+    emit("log", "Found an AppImage, but it does not match a verified official "
+         "release. Choose a source to install or rebuild it.", None)
+    return None
+
+
 def installed_runtime(root, state):
     """Check the selected AppImage; a missing executable always requires setup."""
     if state.get("runtime_source") == "custom":
@@ -1282,7 +1382,8 @@ class Pipeline:
                     raise
                 return self.launch_existing(root, installed)
             self.status("log", "Update declined; launching the existing AppImage unchanged.")
-        if not compiled_code(root):
+        active_digest = state.get(source + "_digest")
+        if not compiled_code(root) or state.get("built_digest") != active_digest:
             self.status("reveal", "Preparing native game code for the first launch...")
             build_game(root, installed, self.status, self.cancel)
             state["built_digest"] = (state.get("official_digest") if source == "official" else
@@ -1358,6 +1459,8 @@ class Pipeline:
         portable_env(root)
         state = read_state(root)
         if self.mode == "startup":
+            if not installed_runtime(root, state) and untracked_appimage(root):
+                identify_local_appimage(root, self.status, self.cancel)
             return self.start_installed()
         if self.mode in ("play", "native"):
             if not valid_game(game_files(root)):
