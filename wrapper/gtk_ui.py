@@ -279,6 +279,74 @@ class Window(Gtk.Window):
         if index in (0, 1):
             self.source_tab = index
 
+    def prompt_initial_source(self):
+        if self.running or installed_runtime(self.root, read_state(self.root)):
+            return False
+        dialog = Gtk.Dialog(
+            title=tr("Choose AppImage source", self.language),
+            transient_for=self if self.get_visible() else None,
+            flags=Gtk.DialogFlags.MODAL)
+        dialog.add_button(tr("Official upstream AppImage", self.language), 1)
+        dialog.add_button(tr("Upstream test branch", self.language), 2)
+        dialog.add_button(tr("Build with pull requests", self.language), 3)
+        dialog.add_button(tr("Cancel", self.language), Gtk.ResponseType.CANCEL)
+        dialog.set_default_response(1)
+        prompt = Gtk.Label(
+            label=tr("No Savage Wind AppImage is installed. Which version would you like to use?",
+                     self.language))
+        prompt.set_line_wrap(True)
+        prompt.set_margin_top(15)
+        prompt.set_margin_bottom(15)
+        dialog.get_content_area().add(prompt)
+        dialog.show_all()
+        response = dialog.run()
+        dialog.destroy()
+        if response not in (1, 2, 3):
+            return False
+        self.test_branch.set_active(response == 2)
+        self.custom.set_active(response == 3)
+        self.prs_changed = True
+        if response == 3:
+            self.tabs.set_current_page(2)
+            self.form.show_all()
+            self.game_status()
+            self.fetch_prs()
+            return False
+        if valid_game(self.root / "root"):
+            self.start("__reuse__")
+        else:
+            self.form.show_all()
+            self.tabs.set_current_page(0)
+            self.game_status()
+        return False
+
+    def update_dialog(self, info):
+        dialog = Gtk.Dialog(
+            title=info["title"], transient_for=self if self.get_visible() else None,
+            flags=Gtk.DialogFlags.MODAL)
+        dialog.add_button(tr("No", self.language), Gtk.ResponseType.NO)
+        dialog.add_button(tr("Yes", self.language), Gtk.ResponseType.YES)
+        dialog.set_default_response(Gtk.ResponseType.NO)
+        # GtkLabel's Pango markup supports clickable links, but not HTML lists.
+        markup = (info["html"].replace("<p>", "\n").replace("</p>", "\n")
+                  .replace("<ul>", "\n").replace("</ul>", "")
+                  .replace("<li>", " • ").replace("</li>", "\n"))
+        label = Gtk.Label()
+        label.set_markup(markup)
+        label.set_line_wrap(True)
+        label.set_selectable(True)
+        label.set_max_width_chars(78)
+        label.set_margin_top(12)
+        label.set_margin_bottom(12)
+        dialog.get_content_area().pack_start(label, False, False, 0)
+        ignore = Gtk.CheckButton(label=tr("Don't ask anymore", self.language))
+        dialog.get_content_area().pack_start(ignore, False, False, 0)
+        dialog.show_all()
+        accepted = dialog.run() == Gtk.ResponseType.YES
+        suppressed = ignore.get_active()
+        dialog.destroy()
+        return accepted, suppressed
+
     def selected_prs(self):
         return [pr for pr, check in self.pr_checks if check.get_active()]
 
@@ -297,11 +365,12 @@ class Window(Gtk.Window):
     def game_status(self):
         state = read_state(self.root)
         existing = valid_game(self.root / "root") or valid_game(self.root / "extracted")
-        self.install_button.set_visible(not existing)
-        self.play_button.set_visible(existing)
-        self.play_button.set_sensitive(existing and compiled_code(self.root))
-        self.native_button.set_visible(existing)
-        self.build_button.set_visible(True)
+        runtime = installed_runtime(self.root, state)
+        self.install_button.set_visible(not existing or not runtime)
+        self.play_button.set_visible(existing and bool(runtime))
+        self.play_button.set_sensitive(existing and bool(runtime) and compiled_code(self.root))
+        self.native_button.set_visible(existing and bool(runtime))
+        self.build_button.set_visible(bool(runtime))
         if existing:
             where = self.root / ("root" if valid_game(self.root / "root") else "extracted")
             self.source.set_text(str(where))
@@ -496,6 +565,7 @@ class Window(Gtk.Window):
         self.form.show_all()
         self.custom_toggled()
         self.test_toggled()
+        self.game_status()
 
     def close_window(self, *_):
         if self.running:
@@ -529,12 +599,20 @@ class Window(Gtk.Window):
                 if self.cancel_event.is_set():
                     raise Cancelled()
             return bool(answer and answer[0])
+        def ask_update(info):
+            gate, answer = threading.Event(), []
+            self.events.put(("update-question", info, answer, gate))
+            while not gate.wait(0.1):
+                if self.cancel_event.is_set():
+                    raise Cancelled()
+            return answer[0] if answer else (False, False)
         if mode == "install":
             prs = ("test" if self.test_branch.get_active() else
                    self.selected_prs() if self.custom.get_active() else []) if self.prs_changed else None
         def work():
             try:
-                result = Pipeline(self.root, emit, ask, self.cancel_event, prs=prs, mode=mode).run(source)
+                result = Pipeline(self.root, emit, ask, self.cancel_event, prs=prs,
+                                  mode=mode, ask_update=ask_update).run(source)
                 self.events.put(("done", result))
             except Cancelled:
                 self.events.put(("done", "cancelled"))
@@ -596,6 +674,12 @@ class Window(Gtk.Window):
                     self.bar.pulse()
                 else:
                     self.bar.set_fraction(float(fraction) / 100)
+            elif event[0] == "update-question":
+                _, info, answer, gate = event
+                try:
+                    answer.append(self.update_dialog(info))
+                finally:
+                    gate.set()
             elif event[0] == "question":
                 _, message, answer, gate = event
                 answer.append(self.alert(progress_text(tr(message, self.language), self.language), question=True))
@@ -662,12 +746,14 @@ def run(root, selftest=False, autoplay=True):
     autostart = bool(autoplay and valid_game(Path(root) / "root") and installed_runtime(root, read_state(root)))
     if autostart:
         # Never show an empty installer before checking the official release.
-        GLib.idle_add(lambda: window.start(None) or False)
+        GLib.idle_add(lambda: window.start(None, mode="startup") or False)
     else:
         window.show_all()
         window.custom_toggled()
         window.test_toggled()
         window.game_status()
         window.progress_box.hide()
+        if autoplay and not installed_runtime(root, read_state(root)):
+            GLib.idle_add(window.prompt_initial_source)
     Gtk.main()
     return 0
