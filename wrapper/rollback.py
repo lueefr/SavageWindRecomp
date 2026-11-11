@@ -34,6 +34,11 @@ class Rollback:
                 json.dump(state, file)
                 file.flush()
                 os.fsync(file.fileno())
+            history = self.root / ".sw-wrapper/runtime-history.json"
+            if history.is_symlink():
+                raise InstallError("Runtime history cannot be a symbolic link.")
+            if history.is_file():
+                shutil.copy2(history, self.folder / "runtime-history.json")
             for name, relative in files_for(state).items():
                 source = self.root / relative
                 if source.is_symlink():
@@ -62,6 +67,14 @@ class Rollback:
                 raise InstallError("Um link simbólico impede a restauração segura.")
             os.replace(backup, target)
         write_state(self.root, state)
+        history = self.root / ".sw-wrapper/runtime-history.json"
+        backup = self.folder / "runtime-history.json"
+        if history.is_symlink():
+            raise InstallError("A symlink prevents safe runtime history restoration.")
+        if backup.is_file():
+            os.replace(backup, history)
+        else:
+            history.unlink(missing_ok=True)
         shutil.rmtree(self.folder)
         return True
 
