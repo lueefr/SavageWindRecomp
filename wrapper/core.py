@@ -1102,9 +1102,15 @@ class Pipeline:
                                "Native game recompilation was not started.")
         # The full setup path prepares the same runtime environment before a
         # native build. The AppImage-only path deliberately skips this until consent.
-        portable_env(root)
-        recover_code_stage(root, self.status)
-        return self.compile_native(root, installed)
+        try:
+            portable_env(root)
+            recover_code_stage(root, self.status)
+            return self.compile_native(root, installed)
+        except InstallError as error:
+            raise InstallError(
+                "The AppImage was built and saved successfully, but the optional "
+                "native game recompilation failed. The AppImage is still available. "
+                f"Details: {error}") from error
 
     def select_native_runtime(self):
         """Resolve the explicitly selected executable before recompiling game code."""
