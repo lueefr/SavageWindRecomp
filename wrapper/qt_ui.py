@@ -545,6 +545,7 @@ class Window(QWidget):
         self.progress_box.hide()
         self.form.show()
         self.back_button.hide()
+        self.game_status()
 
     def closeEvent(self, event):
         if self.running:
