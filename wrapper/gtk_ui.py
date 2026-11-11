@@ -170,7 +170,7 @@ class Window(Gtk.Window):
         self.play_button.connect("clicked", self.play_existing)
         mode_actions.pack_start(self.play_button, True, True, 0)
         self.build_button = Gtk.Button()
-        self.label(self.build_button, "Build AppImage only", "set_label")
+        self.label(self.build_button, "Build AppImage", "set_label")
         self.build_button.connect("clicked", self.build_image)
         mode_actions.pack_start(self.build_button, True, True, 0)
         self.native_button = Gtk.Button()
@@ -598,7 +598,7 @@ class Window(Gtk.Window):
                     self.bar.set_fraction(float(fraction) / 100)
             elif event[0] == "question":
                 _, message, answer, gate = event
-                answer.append(self.alert(progress_text(message, self.language), question=True))
+                answer.append(self.alert(progress_text(tr(message, self.language), self.language), question=True))
                 gate.set()
             elif event[0] == "pr-list":
                 selected = {pr["number"] for pr in self.selected_prs()}
