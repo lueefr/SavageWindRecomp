@@ -808,6 +808,10 @@ def _run_game_build(root, binary, emit, cancel, source):
         upstream_offset = upstream_log.stat().st_size
     except OSError:
         upstream_offset = 0
+    pause = getattr(cancel, "pause", None)
+    clock = pause.clock if pause is not None else time.monotonic
+    if pause is not None:
+        pause.wait(cancel)
     # The upstream's test setup entry returns zero even on a failed setup.
     # A completed compile and a valid library can recover from a missing READY
     # message or a failure after linking, but never override explicit NOT READY.
@@ -816,13 +820,19 @@ def _run_game_build(root, binary, emit, cancel, source):
         proc = subprocess.Popen([str(binary), str(source)],
                                 cwd=root, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, start_new_session=True, bufsize=0)
+        if pause is not None:
+            try:
+                pause.attach(proc)
+            except OSError:
+                stop_process(proc)
+                raise
         # Nice the compiler process without a preexec_fn (unsafe in a threaded Qt/GTK host).
         try:
             os.setpriority(os.PRIO_PROCESS, proc.pid, 8)
         except (AttributeError, PermissionError, ProcessLookupError, OSError):
             pass
         output, ready, not_ready, compiled, entered_game = bytearray(), False, False, False, False
-        started = time.monotonic()
+        started = clock()
         monitor = BuildMonitor(root, started=started, game_dir=source)
         last_heartbeat, last_log = started, started
         with selectors.DefaultSelector() as sel:
@@ -830,10 +840,12 @@ def _run_game_build(root, binary, emit, cancel, source):
             try:
                 while True:
                     check_cancel(cancel)
-                    if time.monotonic() - started > 3600:
+                    if pause is not None:
+                        pause.wait(cancel)
+                    if clock() - started > 3600:
                         raise InstallError("A recompilação ultrapassou uma hora.")
                     events = sel.select(timeout=0.35)
-                    now = time.monotonic()
+                    now = clock()
                     if now - last_heartbeat >= 1:
                         progress = monitor.sample(now)
                         emit("live", progress.message + "\n" + progress.details, progress.percent)
@@ -883,9 +895,14 @@ def _run_game_build(root, binary, emit, cancel, source):
                             "na pasta portátil. Consulte o log e confira o caminho [paths] data.")
                     if proc.poll() is not None and not sel.get_map():
                         break
-            except (Cancelled, InstallError):
+            except BaseException:
+                if pause is not None:
+                    pause.resume()
                 stop_process(proc)
                 raise
+            finally:
+                if pause is not None:
+                    pause.detach(proc)
         proc.wait()
         if output:
             logfile.write(output.decode("utf-8", errors="replace"))
@@ -904,7 +921,7 @@ def _run_game_build(root, binary, emit, cancel, source):
         accepted = artifact_ok and not not_ready and (
             ready and proc.returncode == 0 or compiled or entered_game
             or (proc.returncode == 0 and newly_built))
-        logfile.write(f"[wrapper] Finalizado em {time.monotonic() - started:.1f}s; "
+        logfile.write(f"[wrapper] Finalizado em {clock() - started:.1f}s; "
                       f"exit={proc.returncode}; ready={ready}; not_ready={not_ready}; "
                       f"build_done={compiled}; game_started={entered_game}; "
                       f"artifacts={artifact_ok}; newly_built={newly_built}; "
