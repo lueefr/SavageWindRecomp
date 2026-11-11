@@ -218,3 +218,41 @@ def suppress(root, source):
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
+
+
+# The upstream titles and commit messages remain untouched. Only our fixed
+# headings and labels are translated; all GitHub links stay clickable.
+_LABELS = {
+    "Savage Wind — Atualização oficial": ("Savage Wind — Official update", "Savage Wind — Официальное обновление", "Savage Wind — 官方更新"),
+    "Savage Wind — Atualização test": ("Savage Wind — Test update", "Savage Wind — Обновление test", "Savage Wind — test 更新"),
+    "Savage Wind — Atualização dos PRs": ("Savage Wind — PR updates", "Savage Wind — Обновление PR", "Savage Wind — PR 更新"),
+    "Atualização oficial disponível": ("Official update available", "Доступно официальное обновление", "有可用的官方更新"),
+    "Atualização da branch test": ("Upstream test branch update", "Обновление ветки test", "上游 test 分支更新"),
+    "Atualização da compilação com PRs": ("PR build update", "Обновление сборки с PR", "PR 构建更新"),
+    "Versão instalada:": ("Installed version:", "Установленная версия:", "已安装版本："),
+    "Commit instalado:": ("Installed commit:", "Установленный коммит:", "已安装提交："),
+    "Commit disponível:": ("Available commit:", "Доступный коммит:", "可用提交："),
+    "PRs monitorados:": ("Tracked PRs:", "Отслеживаемые PR:", "已跟踪的 PR："),
+    "Nova release oficial publicada; detalhes no link da release.": (
+        "A new official release was published; see the linked release.",
+        "Опубликован новый официальный выпуск; подробности по ссылке.",
+        "已发布新的官方版本；请查看链接中的发行说明。"),
+    "Alterações detectadas; consulte o histórico da branch.": (
+        "Changes detected; see the branch history.",
+        "Обнаружены изменения; смотрите историю ветки.",
+        "检测到更改；请查看分支历史。"),
+    " recebeu alterações.": (" has new commits.", " получила новые коммиты.", " 有新的提交。"),
+}
+_LANG = {"en": 0, "ru": 1, "zh-Hans": 2}
+
+
+def localized(info, language):
+    """Translate our changelog labels while retaining GitHub links and commit text."""
+    if language not in _LANG:
+        return info
+    index = _LANG[language]
+    result = dict(info)
+    for original, values in _LABELS.items():
+        result["title"] = result["title"].replace(original, values[index])
+        result["html"] = result["html"].replace(original, html.escape(values[index]))
+    return result
