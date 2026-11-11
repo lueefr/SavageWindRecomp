@@ -254,6 +254,88 @@ class StartupTests(unittest.TestCase):
             self.assertEqual(core.read_state(root)["test_commit"], OLD)
             self.assertFalse((root / ".sw-wrapper/rollback").exists())
 
+    def test_accept_official_release_updates_and_recompiles_before_launch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            game(root)
+            image, state = install(root, "official")
+            new_release = {"tag": "v2", "digest": "f" * 64,
+                           "size": 2000000, "url": "https://example.invalid"}
+            offered = {"source": "official", "title": "official", "html": "",
+                       "release": new_release}
+            events = []
+            def download(info, root_, emit, cancel):
+                self.assertEqual(info, new_release)
+                path = root_ / "SavageWind-official.AppImage"
+                path.write_bytes(b"\x7fELFnew-release")
+                return path
+            def native(root_, binary, emit, cancel):
+                self.assertEqual(binary, image)
+                (root_ / "game/swgame.so").write_bytes(b"native-v2")
+                (root_ / "game/swgame.so.id").write_bytes(b"native-v2-id")
+            with mock.patch.object(updates, "check_update", return_value=offered):
+                with mock.patch.object(core, "adopt_release", return_value=None):
+                    with mock.patch.object(core, "download_release", side_effect=download):
+                        with mock.patch.object(core, "build_game", side_effect=native):
+                            with mock.patch.object(core.subprocess, "Popen") as started:
+                                started.return_value.pid = 123
+                                answer = core.Pipeline(
+                                    root, lambda *e: events.append(e), lambda _: True,
+                                    threading.Event(), mode="startup",
+                                    ask_update=lambda _: (True, False)).run()
+            self.assertEqual(answer, "launched")
+            self.assertEqual(core.read_state(root)["official_tag"], "v2")
+            self.assertEqual(core.read_state(root)["built_digest"], "f" * 64)
+            self.assertEqual((root / "game/swgame.so").read_bytes(), b"native-v2")
+            self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"save")
+
+    def test_accept_updated_pr_head_tracks_new_commits(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            game(root)
+            image, state = install(root, "custom")
+            new_prs = [{"number": 636, "sha": PR_NEW}]
+            offered = {"source": "custom", "title": "custom", "html": "",
+                       "prs": new_prs, "base_commit": NEW}
+            def build(root_, selected, emit, cancel, ask=None):
+                self.assertEqual(selected, new_prs)
+                path = root_ / "SavageWind-custom.AppImage"
+                path.write_bytes(b"\x7fELFnew-custom")
+                stat = path.stat()
+                return {"path": path, "digest": "f" * 64,
+                        "selection": pr_build.selection_key(selected),
+                        "base_commit": NEW, "size": stat.st_size,
+                        "mtime_ns": stat.st_mtime_ns}
+            def native(root_, binary, emit, cancel):
+                (root_ / "game/swgame.so").write_bytes(b"new-custom-native")
+                (root_ / "game/swgame.so.id").write_bytes(b"new-custom-id")
+            with mock.patch.object(updates, "check_update", return_value=offered):
+                with mock.patch.object(pr_build, "build_pr_appimage", side_effect=build):
+                    with mock.patch.object(core, "build_game", side_effect=native):
+                        with mock.patch.object(core.subprocess, "Popen") as launched:
+                            launched.return_value.pid = 400
+                            response = core.Pipeline(
+                                root, lambda *_: None, lambda _: True,
+                                threading.Event(), mode="startup",
+                                ask_update=lambda _: (True, False)).run()
+            self.assertEqual(response, "launched")
+            self.assertEqual(core.read_state(root)["custom_prs"], new_prs)
+            self.assertEqual(core.read_state(root)["custom_base"], NEW)
+            self.assertEqual(core.read_state(root)["built_digest"], "f" * 64)
+            self.assertEqual((root / "game/save/slot.sav").read_bytes(), b"save")
+
+    def test_localization_keeps_changelog_links(self):
+        original = {"title": "Savage Wind — Atualização dos PRs",
+                    "html": "<b>Atualização da compilação com PRs</b>"
+                            "<p>PRs monitorados: <a href='https://github.com/"
+                            "Revivedx/SavageWindRecomp/pull/636'>#636</a></p>"}
+        translated = updates.localized(original, "en")
+        self.assertEqual(translated["title"], "Savage Wind — PR updates")
+        self.assertIn("Tracked PRs:", translated["html"])
+        self.assertIn("https://github.com/Revivedx/SavageWindRecomp/pull/636",
+                      translated["html"])
+        self.assertEqual(updates.localized(original, "pt-BR"), original)
+
     def test_offline_update_check_still_launches_cached_game(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
