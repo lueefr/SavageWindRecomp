@@ -12,6 +12,7 @@ from .core import (Pipeline, Cancelled, InstallError, valid_game, compiled_code,
 from .migration import legacy_folder
 from .i18n import LANGUAGES, get_language, set_language, tr, progress_text
 from .pr_build import open_prs
+from .updates import localized
 
 
 class Window(Gtk.Window):
@@ -321,6 +322,7 @@ class Window(Gtk.Window):
         return False
 
     def update_dialog(self, info):
+        info = localized(info, self.language)
         dialog = Gtk.Dialog(
             title=info["title"], transient_for=self if self.get_visible() else None,
             flags=Gtk.DialogFlags.MODAL)
