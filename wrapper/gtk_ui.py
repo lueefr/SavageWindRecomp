@@ -8,7 +8,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, GLib
 
 from .core import (Pipeline, Cancelled, InstallError, valid_game, compiled_code,
-                   read_state, installed_runtime, reset_install)
+                   read_state, installed_runtime, reset_install, untracked_appimage)
 from .migration import legacy_folder
 from .i18n import LANGUAGES, get_language, set_language, tr, progress_text
 from .pr_build import open_prs
@@ -720,6 +720,8 @@ class Window(Gtk.Window):
                     self.custom_toggled()
                     self.test_toggled()
                     self.game_status()
+                    if not installed_runtime(self.root, read_state(self.root)):
+                        GLib.idle_add(self.prompt_initial_source)
                 else:
                     self.reveal(tr("Operation cancelled.", self.language))
                     self.cancel_button.set_sensitive(False)
@@ -745,7 +747,8 @@ def run(root, selftest=False, autoplay=True):
                       (Path(root) / ".sw-wrapper/code-stage").is_file())
     autostart = bool(autoplay and
                      ((valid_game(Path(root) / "root") and
-                       installed_runtime(root, read_state(root))) or needs_recovery))
+                       installed_runtime(root, read_state(root))) or needs_recovery
+                      or untracked_appimage(root)))
     if autostart:
         # Never show an empty installer before checking the official release.
         GLib.idle_add(lambda: window.start(None, mode="startup") or False)
@@ -755,7 +758,8 @@ def run(root, selftest=False, autoplay=True):
         window.test_toggled()
         window.game_status()
         window.progress_box.hide()
-        if autoplay and not installed_runtime(root, read_state(root)):
+        if (autoplay and not installed_runtime(root, read_state(root))
+                and not untracked_appimage(root)):
             GLib.idle_add(window.prompt_initial_source)
     Gtk.main()
     return 0
