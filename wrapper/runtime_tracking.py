@@ -7,7 +7,7 @@ import re
 import tempfile
 
 NAME = "runtime-history.json"
-DIGEST = re.compile(r"[0-9a-f]{64}\\Z")
+DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def identity(state):
@@ -59,7 +59,7 @@ def _save(root, document):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as file:
             json.dump(document, file, ensure_ascii=False, indent=2)
-            file.write("\\n")
+            file.write("\n")
             file.flush()
             os.fsync(file.fileno())
         os.chmod(temporary, 0o600)
@@ -115,7 +115,7 @@ def recover(root):
                 not DIGEST.fullmatch(str(current.get("sha256") or ""))):
             return {}
         with path.open("rb") as file:
-            if file.read(4) != b"\\x7fELF":
+            if file.read(4) != b"\x7fELF":
                 return {}
         from .core import sha256
         if sha256(path) != current["sha256"]:
