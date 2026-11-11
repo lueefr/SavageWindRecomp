@@ -412,6 +412,8 @@ def reset_install(root, confirmation):
             (data / ".xdg").rmdir()
         if data.is_dir() and not any(data.iterdir()):
             data.rmdir()
+        from .runtime_tracking import mark_reset
+        mark_reset(root)
 
 
 def check_cancel(cancel):
@@ -1220,6 +1222,8 @@ class Pipeline:
         """Offer, but never force, native compilation with the selected AppImage."""
         root = self.root
         if not valid_game(game_files(root)):
+            # Do not lose this final decision to the verbose log rate limiter.
+            self._last_log = 0.0
             self.status("log", "AppImage built. Native game compilation was not offered "
                         "because root/ does not contain valid game files.", None)
             return "built"
