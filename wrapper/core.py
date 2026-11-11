@@ -906,6 +906,7 @@ def _run_game_build(root, binary, emit, cancel, source):
             finally:
                 if pause is not None:
                     pause.detach(proc)
+                proc.stdout.close()
         proc.wait()
         if output:
             logfile.write(output.decode("utf-8", errors="replace"))
