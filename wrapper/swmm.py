@@ -217,6 +217,121 @@ def _settings(path, shim, storage):
         )
 
 
+def _global_path(env):
+    """Resolve the official SWMM config, rather than our isolated app shortcut."""
+    base = Path(env.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    if not base.is_absolute():
+        base = Path.home() / ".config"
+    return base / "SWMM/settings.yml"
+
+
+def _yaml_path(value):
+    """Only decode the YAML string scalars written by SWMM's serde_yaml."""
+    value = value.strip()
+    if value in ("", "~", "null", "Null"):
+        return None
+    if value.startswith('"'):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return False
+        return parsed if isinstance(parsed, str) else False
+    if value.startswith("'") and value.endswith("'"):
+        return value[1:-1].replace("''", "'")
+    if value.startswith(("!", "{", "[")) or " #" in value:
+        return False
+    return value
+
+
+def _read_global(text):
+    """Find only the top-level storage and game executable, preserving other settings."""
+    storage = re.search(r"(?m)^storage_dir:[ \t]*([^\n]*)$", text)
+    section = re.search(r"(?m)^savage_wind:[ \t]*$", text)
+    if len(re.findall(r"(?m)^storage_dir:", text)) > 1 or len(
+            re.findall(r"(?m)^savage_wind:", text)) > 1:
+        raise InstallError("SWMM config contains duplicate keys; preserving it.")
+    current = None
+    field = None
+    if section is not None:
+        end = re.search(r"(?m)^[^\s#][^:\n]*:", text[section.end():])
+        block_end = section.end() + end.start() if end else len(text)
+        field = re.search(r"(?m)^([ \t]+)executable:[ \t]*([^\n]*)$",
+                          text[section.end():block_end])
+        if field:
+            old = _yaml_path(field.group(2))
+            current = old
+    old_storage = _yaml_path(storage.group(1)) if storage else None
+    if old_storage is False or current is False:
+        raise InstallError("Unsupported SWMM YAML value; original settings preserved.")
+    return storage, section, field, old_storage, current
+
+
+def _adjust_global(text, root, shim, storage):
+    """Patch two scalar fields only if they already describe this game."""
+    current = _read_global(text)
+    storage_field, section, field, old_store, old_exe = current
+    if old_exe:
+        current_exe = Path(old_exe).expanduser()
+        if (current_exe != shim and
+                (not current_exe.is_absolute() or current_exe.parent.resolve() != root)):
+            return None, old_store  # Existing global config belongs to another game.
+    game = json.dumps(str(shim))
+    # Keep an already populated global mod library accessible, rather than hide it.
+    keep_old = False
+    if old_store and Path(old_store).is_absolute():
+        old_path = Path(old_store)
+        if old_path != storage and old_path.is_dir():
+            try:
+                keep_old = any(old_path.iterdir())
+            except OSError:
+                keep_old = True
+    new_store = old_store if keep_old else str(storage)
+    if section is None:
+        text += ("" if not text or text.endswith("\n") else "\n") + (
+            "savage_wind:\n  executable: " + game + "\n")
+    elif field is not None:
+        # Only change the game executable scalar, not the rest of this mapping.
+        block_start = section.end()
+        end = re.search(r"(?m)^[^\s#][^:\n]*:", text[block_start:])
+        block_end = block_start + end.start() if end else len(text)
+        block = text[block_start:block_end]
+        block = re.sub(r"(?m)^([ \t]+)executable:[ \t]*[^\n]*$",
+                       lambda m: m.group(1) + "executable: " + game, block, count=1)
+        text = text[:block_start] + block + text[block_end:]
+    else:
+        pos = section.end()
+        text = text[:pos] + "\n  executable: " + game + text[pos:]
+    if not keep_old:
+        storage_line = "storage_dir: " + json.dumps(str(storage))
+        if storage_field is not None:
+            text = re.sub(r"(?m)^storage_dir:[ \t]*[^\n]*$",
+                          lambda _: storage_line, text, count=1)
+        else:
+            text = storage_line + "\n" + text
+    return text, new_store
+
+
+def _sync_global(root, shim, storage, env):
+    """Make the *official SWMM menu entry* recognize this portable game.
+
+    Never replace the official binary, other game settings, user-created mods,
+    profiles or arbitrary YAML. The first edit retains an exact backup.
+    """
+    config = _global_path(env)
+    if config.is_symlink() or config.parent.is_symlink():
+        raise InstallError("Official SWMM configuration is a symbolic link.")
+    original = config.read_text(encoding="utf-8") if config.exists() else ""
+    changed, active_storage = _adjust_global(original, Path(root).resolve(), shim, storage)
+    if changed is None:
+        return False, None
+    if changed != original:
+        archive = folder(root) / "global-settings-before-sync.yml"
+        if not archive.exists():
+            _atomic_text(archive, original)
+        _atomic_text(config, changed)
+    return True, active_storage
+
+
 def _shortcut_path(root, env):
     """A distinct app-menu entry per portable game; never replace SWMM's own entry."""
     data_home = Path(env.get("XDG_DATA_HOME") or (Path.home() / ".local/share"))
@@ -280,7 +395,7 @@ def _shortcuts(root, launcher, manager, env):
     _atomic_text(_shortcut_path(root, env), entry)
 
 
-def prepare(root, launcher=None, register=True, environ=None):
+def prepare(root, launcher=None, register=True, environ=None, sync_global=False):
     """Automatically bridge an existing SWMM installation on every portable launch.
 
     Never start SWMM or install packages here. The official executable, its
@@ -316,6 +431,15 @@ def prepare(root, launcher=None, register=True, environ=None):
         storage = base / "data/SWMM"
         command = [str(manager)]
     _settings(config, shim, storage)
+    if sync_global and not local:
+        # The official app-menu entry is a different process. Environment
+        # variables supplied to our dedicated shortcut cannot affect it.
+        try:
+            _sync_global(root, shim, storage, os.environ if environ is None else environ)
+        except (OSError, ValueError, InstallError) as error:
+            # Keep normal Savage Wind launches working if the user customized
+            # the global SWMM config or it is not writable.
+            pass
     # The stock Linux SWMM also uses XDG and system services. Keep its files in
     # this portable installation without changing any existing global config.
     home = base / "home"
