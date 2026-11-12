@@ -80,7 +80,7 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -116,6 +116,8 @@ jobs:
           SSL_CERT_FILE=/dev/null SSL_CERT_DIR=/nonexistent \
           SAVAGEWIND_CA_BUNDLE="$PWD/squashfs-root/usr/share/wrapper/ca-bundle.pem" \
           squashfs-root/usr/bin/swqt/swqt --tls-selftest
+          test -f squashfs-root/usr/share/wrapper/deps.py
+          test ! -e squashfs-root/usr/share/savagewind-builder
           test -f squashfs-root/usr/share/wrapper/build_progress.py
           test -f squashfs-root/usr/share/wrapper/core.py
           test -f squashfs-root/usr/share/wrapper/rollback.py

@@ -1,5 +1,6 @@
 """Portable Savage Wind launcher engine. No game data, keys or third-party runtime are shipped."""
 import errno
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
@@ -203,10 +204,11 @@ def read_state(root):
             state = json.load(source)
         return state if isinstance(state, dict) else {}
     except (OSError, ValueError):
-        return {}
+        from .runtime_tracking import recover
+        return recover(root)
 
 
-def write_state(root, state):
+def write_state(root, state, changes=None):
     directory = Path(root) / ".sw-wrapper"
     directory.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(prefix=".state-", dir=directory)
@@ -217,6 +219,8 @@ def write_state(root, state):
             target.flush()
             os.fsync(target.fileno())
         os.replace(temp, directory / "state.json")
+        from .runtime_tracking import record
+        record(root, state, changes=changes)
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
@@ -234,6 +238,186 @@ def local_release(root, state):
     if st.st_mtime_ns != state.get("official_mtime_ns"):
         return None
     return path
+
+
+def _local_images(root):
+    """Only inspect AppImages in the portable directory, never the whole home."""
+    root = Path(root)
+    paths = [root / f"SavageWind-{name}.AppImage"
+             for name in ("official", "test", "custom")]
+    paths.extend(sorted(root.glob("Savage_Wind-*.AppImage")))
+    for path in dict.fromkeys(paths):
+        try:
+            if path.is_symlink() or not path.is_file() or path.stat().st_size < 1024 * 1024:
+                continue
+            with path.open("rb") as file:
+                if file.read(4) == b"\x7fELF":
+                    yield path
+        except OSError:
+            continue
+
+
+def untracked_appimage(root):
+    """Signal that an existing runtime needs source identification on first use."""
+    return next(_local_images(root), None) is not None
+
+
+def identify_local_appimage(root, emit, cancel):
+    """Adopt an existing official AppImage only after checking upstream SHA-256.
+
+    Development builds without original revision metadata are deliberately not
+    treated as verified official releases or assigned invented commit hashes.
+    """
+    root = Path(root)
+    state = read_state(root)
+    if installed_runtime(root, state):
+        return installed_runtime(root, state)
+    candidates = list(_local_images(root))
+    official = [p for p in candidates if p.name == "SavageWind-official.AppImage"
+                or p.name.startswith("Savage_Wind-")]
+    if not official:
+        if candidates:
+            emit("log", "Local test/PR AppImage detected without verified source "
+                 "metadata. Select its source and rebuild to restore tracking.", None)
+        return None
+    request = urllib.request.Request(RELEASES, headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "SavageWindPortable/1.0",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=10, context=tls_context()) as response:
+            releases = json.load(response)
+        if not isinstance(releases, list):
+            raise InstallError("Invalid upstream release catalogue.")
+    except (urllib.error.URLError, OSError, ValueError, InstallError) as error:
+        emit("log", f"Cannot identify the untracked AppImage while offline: {error}", None)
+        return None
+    identities = {}
+    for release in releases:
+        try:
+            info = latest([release])
+        except (InstallError, KeyError, TypeError, ValueError):
+            continue
+        identities[(info["digest"], info["size"])] = info
+    for candidate in official:
+        check_cancel(cancel)
+        try:
+            size = candidate.stat().st_size
+            digest = sha256(candidate, cancel)
+        except OSError:
+            continue
+        info = identities.get((digest, size))
+        if info is None:
+            continue
+        target = root / "SavageWind-official.AppImage"
+        if target.is_symlink():
+            raise InstallError("The official AppImage destination is a symbolic link.")
+        if candidate != target:
+            from shutil import copyfileobj
+            fd, temp = tempfile.mkstemp(prefix=".adopt-", dir=root / ".sw-wrapper")
+            try:
+                with os.fdopen(fd, "wb") as output, candidate.open("rb") as source:
+                    copyfileobj(source, output, CHUNK)
+                    output.flush()
+                    os.fsync(output.fileno())
+                if sha256(temp, cancel) != info["digest"]:
+                    raise InstallError("Local AppImage changed during verification.")
+                os.chmod(temp, 0o755)
+                os.replace(temp, target)
+            finally:
+                if os.path.exists(temp):
+                    os.unlink(temp)
+        stat = target.stat()
+        state.update({
+            "runtime_source": "official",
+            "official_digest": info["digest"],
+            "official_tag": info["tag"],
+            "official_size": stat.st_size,
+            "official_mtime_ns": stat.st_mtime_ns,
+        })
+        write_state(root, state)
+        emit("log", f"Identified installed official AppImage: {info['tag']} "
+             f"(SHA-256 {info['digest'][:12]}).", None)
+        return target
+    emit("log", "Found an AppImage, but it does not match a verified official "
+         "release. Choose a source to install or rebuild it.", None)
+    return None
+
+
+def installed_runtime(root, state):
+    """Check the selected AppImage; a missing executable always requires setup."""
+    if state.get("runtime_source") == "custom":
+        from .pr_build import custom_runtime
+        return custom_runtime(root, state)
+    if state.get("runtime_source") == "test":
+        from .pr_build import test_runtime
+        return test_runtime(root, state)
+    return local_release(root, state)
+
+
+def reset_install(root, confirmation):
+    """Remove installed game/runtime artifacts but preserve saves and settings."""
+    if confirmation != "DELETE":
+        raise InstallError("Type DELETE to confirm. Saves and settings will be preserved.")
+    root = Path(root).resolve()
+    if root in (Path("/"), Path.home()):
+        raise InstallError("Refusing to delete an unsafe directory.")
+    metadata = root / ".sw-wrapper"
+    if metadata.is_symlink():
+        raise InstallError("Installer metadata is a symbolic link.")
+    metadata.mkdir(exist_ok=True)
+    with (metadata / "operation.lock").open("a+b") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise InstallError("Close the game and other installers first.") from error
+        data = game_data(root)
+        targets = [root / name for name in (
+            "root", "extracted", "SavageWind-official.AppImage",
+            "SavageWind-custom.AppImage", "SavageWind-test.AppImage",
+            "SavageWind-FSR2.AppImage")]
+        # Do not follow symlinks, including game/ and private metadata paths.
+        if data.is_symlink():
+            raise InstallError("Refusing to delete inside a symlinked game/ directory.")
+        if data.exists() and not data.is_dir():
+            raise InstallError("game/ is not a directory.")
+        # Keep both Linux and upstream user save/configuration locations.
+        protected = {"save", "saves", "savestates", "config", "configs",
+                     "profiles", ".config", "savagewind.ini"}
+        extensions = {".ini", ".cfg", ".conf", ".toml", ".json", ".yaml", ".yml"}
+        if data.is_dir():
+            for child in data.iterdir():
+                if child.name in protected or child.suffix.lower() in extensions:
+                    continue
+                if child.name == ".xdg":
+                    if child.is_symlink() or not child.is_dir():
+                        raise InstallError("game/.xdg must be a real directory.")
+                    # Application settings and per-application data may contain saves.
+                    for nested in child.iterdir():
+                        if nested.name not in ("config", "data"):
+                            targets.append(nested)
+                    continue
+                targets.append(child)
+        for child in metadata.iterdir():
+            if child.name not in ("gui.json", "update-prefs.json", "runtime-history.json", "operation.lock"):
+                targets.append(child)
+        # Check every affected location before making any destructive changes.
+        for target in targets:
+            if target.is_symlink():
+                raise InstallError(f"Refusing to delete a symlink: {target}")
+            if target.exists() and not (target.is_file() or target.is_dir()):
+                raise InstallError(f"Unexpected installation file: {target}")
+        for target in targets:
+            if target.is_dir():
+                shutil.rmtree(target)
+            elif target.exists():
+                target.unlink()
+        if (data / ".xdg").is_dir() and not any((data / ".xdg").iterdir()):
+            (data / ".xdg").rmdir()
+        if data.is_dir() and not any(data.iterdir()):
+            data.rmdir()
+        from .runtime_tracking import mark_reset
+        mark_reset(root)
 
 
 def check_cancel(cancel):
@@ -312,6 +496,9 @@ def download_release(info, root, emit, cancel):
         with os.fdopen(fd, "wb", buffering=CHUNK) as dest, urllib.request.urlopen(
                 request, timeout=20, context=tls_context()) as src:
             while data := src.read(CHUNK):
+                pause = getattr(cancel, "pause", None)
+                if pause is not None:
+                    pause.wait(cancel)
                 check_cancel(cancel)
                 transferred += len(data)
                 if transferred > info["size"]:
@@ -448,10 +635,77 @@ def stop_process(proc):
         pass
 
 
+def recover_code_stage(root, emit=None):
+    """Restore the original portable game directory after an interrupted setup."""
+    root = Path(root)
+    marker = root / ".sw-wrapper/code-stage"
+    if marker.is_symlink():
+        raise InstallError("The native-code staging marker cannot be a symbolic link.")
+    if not marker.exists():
+        return False
+    if marker.read_text(encoding="ascii", errors="replace").strip() != "game/extracted":
+        raise InstallError("Unknown native-code staging state; game files were left untouched.")
+    source = game_files(root)
+    temporary = game_data(root) / "extracted"
+    if source.is_symlink() or temporary.is_symlink():
+        raise InstallError("The native-code staging folders cannot be symbolic links.")
+    if not source.exists() and temporary.is_dir():
+        os.replace(temporary, source)
+        if emit:
+            emit("log", "Recovered root/ after an interrupted native-code build.", None)
+    elif source.is_dir() and not temporary.exists():
+        pass
+    else:
+        raise InstallError(
+            "Native-code setup is incomplete: root/ and game/extracted/ have "
+            "an unexpected state. No game files were deleted.")
+    marker.unlink()
+    return True
+
+
+@contextmanager
+def stage_native_code(root):
+    """Make the upstream-required data-root/extracted layout without copying RomFS.
+
+    The launcher retains root/ as its public storage layout and game/ for saves.
+    This is a same-filesystem rename under the installation operation lock.
+    """
+    root = Path(root)
+    origin = game_files(root)
+    temporary = game_data(root) / "extracted"
+    marker = root / ".sw-wrapper/code-stage"
+    if not valid_game(origin):
+        raise InstallError("Native-code staging requires a complete root/ game folder.")
+    if origin.is_symlink() or temporary.exists() or temporary.is_symlink() or marker.exists():
+        raise InstallError(
+            "Cannot stage game files: root/, game/extracted/ or the staging "
+            "marker is already occupied. Nothing was overwritten.")
+    game_data(root).mkdir(parents=True, exist_ok=True)
+    with marker.open("x", encoding="ascii") as file:
+        file.write("game/extracted\n")
+        file.flush()
+        os.fsync(file.fileno())
+    try:
+        os.replace(origin, temporary)
+    except BaseException:
+        marker.unlink()
+        raise
+    try:
+        yield temporary
+    finally:
+        # If an earlier cleanup failed, never overwrite either source folder.
+        recover_code_stage(root)
+
+
 def compiled_code(root, staging=False):
     # The official compiler writes next to exefs/romfs. After success we keep
     # the native library inside game/ and pass its path to the official loader.
     location = game_files(root) if staging else game_data(root)
+    return compiled_pair(location)
+
+
+def compiled_pair(location):
+    location = Path(location)
     lib = location / "swgame.so"
     identity = location / "swgame.so.id"
     if lib.is_symlink() or identity.is_symlink():
@@ -532,38 +786,69 @@ def publish_code(root):
 
 
 def build_game(root, binary, emit, cancel):
+    # New upstream runtime requires <data root>/extracted as a real directory.
+    # Only locally built test/PR AppImages need the staging layout.
+    source = read_state(root).get("runtime_source")
+    if source in ("test", "custom"):
+        with stage_native_code(root) as staged:
+            _run_game_build(root, binary, emit, cancel, staged)
+    else:
+        _run_game_build(root, binary, emit, cancel, game_files(root))
+    publish_code(root)
+    emit("log", "Native code moved into game/swgame.so.", None)
+    emit("progress", "Native code validated.", 100)
+
+
+def _run_game_build(root, binary, emit, cancel, source):
     emit("stage", "Preparando o código nativo do jogo...", None)
     emit("log", "O compilador oficial será executado. Esta etapa pode consumir CPU e RAM.", None)
     env = portable_env(root)
     env["SAVAGEWIND_LAUNCHER_EXTRACT"] = ""
     env["SAVAGEWIND_HIDDEN"] = "1"
     log_path = root / ".sw-wrapper/build.log"
+    upstream_log = game_data(root) / "savagewind.log"
+    try:
+        upstream_offset = upstream_log.stat().st_size
+    except OSError:
+        upstream_offset = 0
+    pause = getattr(cancel, "pause", None)
+    clock = pause.clock if pause is not None else time.monotonic
+    if pause is not None:
+        pause.wait(cancel)
     # The upstream's test setup entry returns zero even on a failed setup.
     # A completed compile and a valid library can recover from a missing READY
     # message or a failure after linking, but never override explicit NOT READY.
     with open(log_path, "w", encoding="utf-8") as logfile:
         build_started_ns = time.time_ns()
-        proc = subprocess.Popen([str(binary), str(game_files(root))],
+        proc = subprocess.Popen([str(binary), str(source)],
                                 cwd=root, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, start_new_session=True, bufsize=0)
+        if pause is not None:
+            try:
+                pause.attach(proc)
+            except OSError:
+                stop_process(proc)
+                raise
         # Nice the compiler process without a preexec_fn (unsafe in a threaded Qt/GTK host).
         try:
             os.setpriority(os.PRIO_PROCESS, proc.pid, 8)
         except (AttributeError, PermissionError, ProcessLookupError, OSError):
             pass
         output, ready, not_ready, compiled, entered_game = bytearray(), False, False, False, False
-        started = time.monotonic()
-        monitor = BuildMonitor(root, started=started)
+        started = clock()
+        monitor = BuildMonitor(root, started=started, game_dir=source)
         last_heartbeat, last_log = started, started
         with selectors.DefaultSelector() as sel:
             sel.register(proc.stdout, selectors.EVENT_READ)
             try:
                 while True:
                     check_cancel(cancel)
-                    if time.monotonic() - started > 3600:
+                    if pause is not None:
+                        pause.wait(cancel)
+                    if clock() - started > 3600:
                         raise InstallError("A recompilação ultrapassou uma hora.")
                     events = sel.select(timeout=0.35)
-                    now = time.monotonic()
+                    now = clock()
                     if now - last_heartbeat >= 1:
                         progress = monitor.sample(now)
                         emit("live", progress.message + "\n" + progress.details, progress.percent)
@@ -601,7 +886,7 @@ def build_game(root, binary, emit, cancel):
                     # exiting the test hook. Detect this and relaunch through
                     # the portable path rather than waiting until the 1h timeout.
                     if entered_game:
-                        if compiled_code(root, staging=True):
+                        if compiled_pair(source):
                             logfile.write("[wrapper] O executável oficial iniciou o jogo durante a preparação. "
                                           "Reiniciando pelo fluxo portátil.\n")
                             emit("log", "O executável oficial entrou no jogo. Reiniciando pelo portable...", None)
@@ -613,13 +898,19 @@ def build_game(root, binary, emit, cancel):
                             "na pasta portátil. Consulte o log e confira o caminho [paths] data.")
                     if proc.poll() is not None and not sel.get_map():
                         break
-            except (Cancelled, InstallError):
+            except BaseException:
+                if pause is not None:
+                    pause.resume()
                 stop_process(proc)
                 raise
+            finally:
+                if pause is not None:
+                    pause.detach(proc)
+                proc.stdout.close()
         proc.wait()
         if output:
             logfile.write(output.decode("utf-8", errors="replace"))
-        artifact_ok = compiled_code(root, staging=True)
+        artifact_ok = compiled_pair(source)
         # Silent upstream runs may write logs into their own data folder.
         # A zero exit plus a newly written native pair is a stronger signal
         # than the absence of READY/done text from the captured pipe.
@@ -627,14 +918,14 @@ def build_game(root, binary, emit, cancel):
         if artifact_ok:
             try:
                 newly_built = all(
-                    (game_files(root) / name).stat().st_mtime_ns >= build_started_ns - 1_000_000_000
+                    (source / name).stat().st_mtime_ns >= build_started_ns - 1_000_000_000
                     for name in ("swgame.so", "swgame.so.id"))
             except OSError:
                 pass
         accepted = artifact_ok and not not_ready and (
             ready and proc.returncode == 0 or compiled or entered_game
             or (proc.returncode == 0 and newly_built))
-        logfile.write(f"[wrapper] Finalizado em {time.monotonic() - started:.1f}s; "
+        logfile.write(f"[wrapper] Finalizado em {clock() - started:.1f}s; "
                       f"exit={proc.returncode}; ready={ready}; not_ready={not_ready}; "
                       f"build_done={compiled}; game_started={entered_game}; "
                       f"artifacts={artifact_ok}; newly_built={newly_built}; "
@@ -651,6 +942,25 @@ def build_game(root, binary, emit, cancel):
         if proc.returncode and not (compiled or entered_game):
             reasons.append(f"o processo terminou com código {proc.returncode}")
         detail = "; ".join(reasons) or f"estado inesperado, código de saída {proc.returncode}"
+        # The upstream logs gamebuild failures to its own data root, not stdout.
+        # Surface only diagnostic lines written during this attempt.
+        try:
+            with upstream_log.open("rb") as stream:
+                size = stream.seek(0, os.SEEK_END)
+                stream.seek(min(upstream_offset, size))
+                diagnostics = stream.read(256 * 1024).decode("utf-8", "replace")
+            relevant = [line.strip() for line in diagnostics.splitlines()
+                        if line.startswith(("[gamebuild]", "[launcher] FAILED",
+                                            "[launcher] game code:", "[paths] refusing"))]
+            for line in relevant[-12:]:
+                emit("log", "[upstream] " + line[:700], None)
+            failures = [line for line in relevant if
+                        "failed" in line.lower() or "couldn't" in line.lower()
+                        or "refusing" in line.lower()]
+            if failures:
+                detail += "; upstream: " + failures[-1][:300]
+        except OSError:
+            pass
         emit("log", f"[wrapper] Falha ao validar o código nativo: {detail}", None)
         raise InstallError(
             f"O código nativo não foi validado: {detail}. "
@@ -658,9 +968,7 @@ def build_game(root, binary, emit, cancel):
     if not ready:
         emit("log", "Compilação recuperada: o código nativo foi concluído, "
                     "embora o upstream não tenha retornado a confirmação READY.", None)
-    publish_code(root)
-    emit("log", "Biblioteca recompilada movida para game/swgame.so.", None)
-    emit("progress", "Código nativo validado. Iniciando o jogo...", 100)
+    return
 
 
 
@@ -790,13 +1098,22 @@ def import_packages(root, paths, emit, cancel):
 
 
 class Pipeline:
-    def __init__(self, root, emit, ask, cancel):
+    def __init__(self, root, emit, ask, cancel, prs=None, mode="install",
+                 ask_update=None):
         self.root = Path(root).resolve()
         self.emit, self.ask, self.cancel = emit, ask, cancel
+        self.prs = prs  # None: preserve runtime; []: official; "test": upstream test; list: PRs
+        self.ask_update = ask_update
+        if mode not in ("install", "build_only", "play", "native", "startup"):
+            raise ValueError("Invalid portable installer operation")
+        self.mode = mode
         self._last_progress = 0.0
         self._last_log = 0.0
 
     def status(self, kind, message, fraction=None):
+        pause = getattr(self.cancel, "pause", None)
+        if pause is not None:
+            pause.wait(self.cancel)
         check_cancel(self.cancel)
         if kind in ("log", "stage"):
             # Keep every important line on disk, but bound the UI event rate.
@@ -812,6 +1129,301 @@ class Pipeline:
                 return
             self._last_log = now
         self.emit(kind, message, fraction)
+
+    def launch_existing(self, root, installed):
+        self.status("stage", "Iniciando o Savage Wind...")
+        with (root / ".sw-wrapper/game.log").open("ab") as logfile:
+            process = subprocess.Popen([str(installed), "--play", str(game_files(root))],
+                                       env=portable_env(root, play=True), cwd=root,
+                                       start_new_session=True, stdout=subprocess.DEVNULL,
+                                       stderr=logfile, pass_fds=(self._lock_fd,))
+        self.status("log", f"Jogo iniciado (PID {process.pid}).")
+        return "launched"
+
+    def build_source_only(self):
+        """Build or select one source AppImage without touching game data or native code."""
+        root = self.root
+        state = read_state(root)
+        if self.prs == "test":
+            from .pr_build import build_test_appimage, test_runtime, upstream_test_head
+            installed = test_runtime(root, state)
+            rebuild = True
+            if installed and state.get("test_commit"):
+                try:
+                    head = upstream_test_head()
+                    rebuild = head != state["test_commit"]
+                    if not rebuild:
+                        self.status("log", f"Upstream test {head[:12]} has not changed; reusing the AppImage.")
+                except InstallError as error:
+                    if not self.ask(f"Could not check upstream test: {error}\n"
+                                    "Reuse the existing AppImage without checking for updates?"):
+                        return "setup"
+                    rebuild = False
+            if rebuild:
+                if not self.ask("Build an AppImage from upstream test? This only builds "
+                                "the executable; game files, swgame.so and saves remain untouched."):
+                    return "setup"
+                result = build_test_appimage(root, self.status, self.cancel, ask=self.ask)
+                installed = result["path"]
+                state.update({
+                    "runtime_source": "test", "test_digest": result["digest"],
+                    "test_commit": result["commit"], "test_size": result["size"],
+                    "test_mtime_ns": result["mtime_ns"],
+                })
+                write_state(root, state)
+            elif state.get("runtime_source") != "test":
+                raise InstallError("Cannot reuse a test AppImage that is not the selected runtime.")
+        elif isinstance(self.prs, list) and self.prs:
+            from .pr_build import build_pr_appimage, custom_runtime, selection_key
+            desired = selection_key(self.prs)
+            installed = custom_runtime(root, state)
+            base_changed = False
+            if installed and state.get("custom_base"):
+                from .pr_build import upstream_test_head
+                try:
+                    base_changed = upstream_test_head() != state["custom_base"]
+                except InstallError as error:
+                    self.status("log", f"Cannot check PR build base: {error}")
+                    base_changed = True
+            if not installed or state.get("custom_selection") != desired or base_changed:
+                if not self.ask("Compile an AppImage using the selected PRs? PR code may be "
+                                "unreviewed. Game code, files and saves will not be modified."):
+                    return "setup"
+                result = build_pr_appimage(root, self.prs, self.status, self.cancel, ask=self.ask)
+                installed = result["path"]
+                state.update({
+                    "runtime_source": "custom", "custom_digest": result["digest"],
+                    "custom_selection": result["selection"], "custom_size": result["size"],
+                    "custom_mtime_ns": result["mtime_ns"],
+                    "custom_prs": [{"number": pr["number"], "sha": pr["sha"]}
+                                   for pr in self.prs],
+                    "custom_base": result.get("base_commit"),
+                })
+                write_state(root, state)
+            else:
+                if not state.get("custom_prs"):
+                    state["custom_prs"] = [{"number": p["number"], "sha": p["sha"]}
+                                           for p in self.prs]
+                    write_state(root, state)
+                self.status("log", "Selected PRs and upstream base are unchanged; reusing the AppImage.")
+        elif self.prs == []:
+            self.status("stage", "Checking the official Savage Wind release...")
+            remote = fetch_latest()
+            installed = local_release(root, state)
+            if not installed or state.get("official_digest") != remote["digest"]:
+                if not self.ask(f"Download Savage Wind {remote['tag']} from official upstream?"):
+                    return "setup"
+                installed = (adopt_release(remote, root, self.status, self.cancel)
+                             or download_release(remote, root, self.status, self.cancel))
+                stat = installed.stat()
+                state.update({
+                    "official_digest": remote["digest"], "official_tag": remote["tag"],
+                    "official_size": stat.st_size,
+                    "official_mtime_ns": stat.st_mtime_ns,
+                })
+            else:
+                self.status("log", "The official AppImage is already current; reusing it.")
+            state["runtime_source"] = "official"
+            write_state(root, state)
+        else:
+            raise InstallError("Choose the official release, test branch or a PR selection.")
+        self.status("source-finish", f"AppImage ready: {installed.name}", 100)
+        self.status("log", "Executable build complete. Native game code and saves are unchanged.")
+        return "built"
+
+    def compile_native(self, root, installed):
+        """Compile native game code only after explicit permission or a native action."""
+        self.status("native-start", "Recompiling native game code...", None)
+        self.status("reveal", "Recompiling game code at your request...")
+        build_game(root, installed, self.status, self.cancel)
+        state = read_state(root)
+        active = (state.get("test_digest") if state.get("runtime_source") == "test" else
+                  state.get("custom_digest") if state.get("runtime_source") == "custom" else
+                  state.get("official_digest"))
+        state["built_digest"] = active
+        state["built_cpu"] = cpu_target()
+        write_state(root, state)
+        self.status("progress", "Native game code compiled. Use Play to launch.", 100)
+        return "native-built"
+
+    def offer_native_after_appimage(self):
+        """Offer, but never force, native compilation with the selected AppImage."""
+        root = self.root
+        if not valid_game(game_files(root)):
+            # Do not lose this final decision to the verbose log rate limiter.
+            self._last_log = 0.0
+            self.status("log", "AppImage built. Native game compilation was not offered "
+                        "because root/ does not contain valid game files.", None)
+            return "built"
+        question = (
+            "The AppImage is ready.\n\n"
+            "Recompile the game's native library (swgame.so) using this AppImage now?\n\n"
+            "This can take a long time and will replace the existing native library. "
+            "Saves, settings and extracted game files will be preserved.\n\n"
+            "Choose No to finish without recompiling the game.")
+        if not self.ask(question):
+            self.status("log", "Native game recompilation declined. "
+                        "The existing swgame.so and saves were preserved.", None)
+            return "built"
+        check_cancel(self.cancel)
+        state = read_state(root)
+        installed = installed_runtime(root, state)
+        if not installed:
+            raise InstallError("The newly built AppImage could not be verified. "
+                               "Native game recompilation was not started.")
+        # The full setup path prepares the same runtime environment before a
+        # native build. The AppImage-only path deliberately skips this until consent.
+        try:
+            portable_env(root)
+            recover_code_stage(root, self.status)
+            return self.compile_native(root, installed)
+        except InstallError as error:
+            raise InstallError(
+                "The AppImage was built and saved successfully, but the optional "
+                "native game recompilation failed. The AppImage is still available. "
+                f"Details: {error}") from error
+
+    def select_native_runtime(self):
+        """Resolve the explicitly selected executable before recompiling game code."""
+        root = self.root
+        if self.prs == "test" or (isinstance(self.prs, list) and self.prs):
+            result = self.build_source_only()
+            if result != "built":
+                return None
+            return installed_runtime(root, read_state(root))
+        if self.prs == []:
+            state = read_state(root)
+            installed = local_release(root, state)
+            if not installed:
+                remote = fetch_latest()
+                if not remote:
+                    raise InstallError("An official AppImage is required but no release is available.")
+                if not self.ask("Download the official AppImage before explicitly recompiling "
+                                "the game's native code?"):
+                    return None
+                installed = (adopt_release(remote, root, self.status, self.cancel)
+                             or download_release(remote, root, self.status, self.cancel))
+                stat = installed.stat()
+                state.update({
+                    "official_digest": remote["digest"], "official_tag": remote["tag"],
+                    "official_size": stat.st_size, "official_mtime_ns": stat.st_mtime_ns,
+                })
+            state["runtime_source"] = "official"
+            write_state(root, state)
+            return installed
+        return installed_runtime(root, read_state(root))
+
+    def start_installed(self):
+        """Check the selected runtime for updates before normal gameplay."""
+        from .updates import check_update, suppress, suppressed
+        from .rollback import Rollback
+        from .pr_build import build_test_appimage, build_pr_appimage
+
+        root = self.root
+        state = read_state(root)
+        installed = installed_runtime(root, state)
+        if not installed or not valid_game(game_files(root)):
+            return "setup"
+        source = state.get("runtime_source", "official")
+        update = None
+        if not suppressed(root, source):
+            if source == "custom" and not state.get("custom_prs"):
+                self.status("log", "This custom AppImage predates PR revision tracking. "
+                            "Re-select and rebuild its PRs once to enable update checks.")
+            else:
+                self.status("stage", "Checking for updates to the selected AppImage...")
+                try:
+                    update = check_update(state)
+                except Exception as error:
+                    # GitHub metadata failures are never grounds to block an
+                    # already installed and working offline game.
+                    self.status("log", f"Update check unavailable ({source}): {error}. "
+                                "Using the installed AppImage.")
+        else:
+            self.status("log", f"Update notifications for {source} are disabled.")
+        if update is not None:
+            if self.ask_update is not None:
+                accepted, stop_asking = self.ask_update(update)
+            else:
+                accepted, stop_asking = self.ask(
+                    f"{update['title']}\n"
+                    "An update is available. Update the AppImage and recompile "
+                    "the native game code now?"), False
+            if stop_asking:
+                suppress(root, source)
+                self.status("log", f"User disabled future {source} update prompts.")
+            if accepted:
+                self.status("reveal", "Updating the selected AppImage and game code...")
+                previous = dict(state)
+                rollback = Rollback(root)
+                rollback.begin(previous)
+                try:
+                    if source == "official":
+                        info = update["release"]
+                        installed = (adopt_release(info, root, self.status, self.cancel)
+                                     or download_release(info, root, self.status, self.cancel))
+                        stat = installed.stat()
+                        state.update({
+                            "official_digest": info["digest"],
+                            "official_tag": info["tag"],
+                            "official_size": stat.st_size,
+                            "official_mtime_ns": stat.st_mtime_ns,
+                        })
+                    elif source == "test":
+                        result = build_test_appimage(root, self.status, self.cancel,
+                                                     ask=self.ask)
+                        if result["commit"] != update["commit"]:
+                            raise InstallError("Upstream test changed during the build. "
+                                               "The installed version will be restored.")
+                        installed = result["path"]
+                        state.update({
+                            "test_digest": result["digest"], "test_commit": result["commit"],
+                            "test_size": result["size"],
+                            "test_mtime_ns": result["mtime_ns"],
+                        })
+                    else:
+                        result = build_pr_appimage(root, update["prs"], self.status,
+                                                   self.cancel, ask=self.ask)
+                        if (result.get("base_commit") and
+                                result["base_commit"] != update["base_commit"]):
+                            raise InstallError("Upstream test changed during the PR build. "
+                                               "The installed version will be restored.")
+                        installed = result["path"]
+                        state.update({
+                            "custom_digest": result["digest"],
+                            "custom_selection": result["selection"],
+                            "custom_size": result["size"],
+                            "custom_mtime_ns": result["mtime_ns"],
+                            "custom_prs": update["prs"],
+                            "custom_base": result.get("base_commit", update["base_commit"]),
+                        })
+                    write_state(root, state)
+                    self.status("native-start", "Recompiling the game after updating the AppImage...", None)
+                    build_game(root, installed, self.status, self.cancel)
+                    state["built_digest"] = (state.get("official_digest") if source == "official" else
+                                             state.get("test_digest") if source == "test" else
+                                             state.get("custom_digest"))
+                    state["built_cpu"] = cpu_target()
+                    write_state(root, state, changes=update)
+                    rollback.commit()
+                    self.status("log", "AppImage and native game code updated successfully.")
+                except BaseException:
+                    rollback.restore()
+                    self.status("log", "Update did not finish; the previous AppImage, "
+                                "native game library and state were restored.")
+                    raise
+                return self.launch_existing(root, installed)
+            self.status("log", "Update declined; launching the existing AppImage unchanged.")
+        active_digest = state.get(source + "_digest")
+        if not compiled_code(root) or state.get("built_digest") != active_digest:
+            self.status("reveal", "Preparing native game code for the first launch...")
+            build_game(root, installed, self.status, self.cancel)
+            state["built_digest"] = (state.get("official_digest") if source == "official" else
+                                     state.get("test_digest") if source == "test" else
+                                     state.get("custom_digest"))
+            state["built_cpu"] = cpu_target()
+            write_state(root, state)
+        return self.launch_existing(root, installed)
 
     def run(self, source=None):
         # Prevent two GUI instances from replacing the same AppImage or extracted files.
@@ -830,6 +1442,9 @@ class Pipeline:
             return self._run_locked(source)
 
     def _run_locked(self, source=None):
+        from_setup = source == "__reuse__"
+        if from_setup:
+            source = None
         root = self.root
         fd, temp = tempfile.mkstemp(prefix=".write-", dir=root)
         os.close(fd)
@@ -837,6 +1452,11 @@ class Pipeline:
         if (root / ".sw-wrapper").is_symlink():
             raise InstallError("A pasta .sw-wrapper não pode ser um link simbólico.")
         (root / ".sw-wrapper").mkdir(exist_ok=True)
+        if self.mode == "build_only":
+            result = self.build_source_only()
+            if result != "built":
+                return result
+            return self.offer_native_after_appimage()
         self.status("stage", "Preparando o armazenamento portátil...")
         from .rollback import Rollback
         pending = Rollback(root)
@@ -844,6 +1464,9 @@ class Pipeline:
             self.status("reveal", "Recuperando uma atualização interrompida...")
             self.status("stage", "Recuperando uma atualização interrompida...")
             pending.restore()
+        # A power loss during a test/PR native-code build can leave root/ in
+        # game/extracted/. Restore it before checking the portable installation.
+        recover_code_stage(root, self.status)
         from .migration import legacy_folder, move_data, organize_portable
         organize_portable(root, self.status, self.cancel)
         state = read_state(root)
@@ -867,41 +1490,143 @@ class Pipeline:
                 write_state(root, state)
         portable_env(root)
         state = read_state(root)
+        if self.mode == "startup":
+            if not installed_runtime(root, state) and untracked_appimage(root):
+                identify_local_appimage(root, self.status, self.cancel)
+            return self.start_installed()
+        if self.mode in ("play", "native"):
+            if not valid_game(game_files(root)):
+                raise InstallError("No valid game files in root/. Import your own game files first.")
+            # Play never builds anything. Recompile may optionally select test/PR
+            # or official first, but only after the user's explicit request.
+            installed = (self.select_native_runtime() if self.mode == "native" else
+                         installed_runtime(root, state))
+            if installed is None:
+                return "setup"
+            state = read_state(root)
+            if self.mode == "play":
+                if not compiled_code(root):
+                    raise InstallError("No valid native game library in game/. "
+                                       "Use 'Recompile game code' explicitly if needed.")
+                if state.get("built_cpu") and state["built_cpu"] != cpu_target():
+                    raise InstallError("The native game code targets another CPU. "
+                                       "Recompilation must be requested explicitly.")
+                active = (state.get("test_digest") if state.get("runtime_source") == "test" else
+                          state.get("custom_digest") if state.get("runtime_source") == "custom" else
+                          state.get("official_digest"))
+                if state.get("built_digest") != active:
+                    self.status("log", "Launching with existing swgame.so without rebuilding. "
+                                "The new AppImage may require a matching library; the upstream "
+                                "loader will check compatibility.")
+                return self.launch_existing(root, installed)
+            return self.compile_native(root, installed)
+        build_only = False  # An explicit AppImage-only operation exits above.
         if source and valid_game(game_files(root)):
             raise InstallError("O jogo já está instalado nesta pasta. Seus arquivos não serão substituídos.")
-        if not valid_game(game_files(root)) and not source:
+        if not build_only and not valid_game(game_files(root)) and not source:
+            return "setup"
+        if (not build_only and not from_setup and source is None and
+                installed_runtime(root, state) is None):
             return "setup"
         # Check availability before copying many GiB of game files.
         if source and game_files(root).exists() and not valid_game(game_files(root)):
             raise InstallError("A pasta root/ já existe, mas está incompleta. Não será sobrescrita.")
-        self.status("stage", "Procurando atualizações oficiais...")
-        installed = local_release(root, state)
-        release_error = None
-        try:
-            remote = fetch_latest()
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError, InstallError) as error:
-            remote = None
-            release_error = str(error)
-            self.status("log", f"Atualização indisponível: {error}")
+        # Source builds are opt-in and do not replace the official executable.
         rollback = None
-        if remote and (not installed or state.get("official_digest") != remote["digest"]):
-            if not installed or self.ask(f"Há uma atualização do Savage Wind ({remote['tag']}).\nDeseja instalá-la?"):
-                self.status("reveal", f"Instalando Savage Wind {remote['tag']}...")
-                if installed:
-                    rollback = Rollback(root)
-                    self.status("stage", "Protegendo a versão atual antes de atualizar...")
-                    rollback.begin(dict(state))
-                try:
-                    installed = (adopt_release(remote, root, self.status, self.cancel)
-                                 or download_release(remote, root, self.status, self.cancel))
-                    stat = installed.stat()
-                    state.update({"official_digest": remote["digest"], "official_tag": remote["tag"],
-                                  "official_size": stat.st_size, "official_mtime_ns": stat.st_mtime_ns})
+        current_source = state.get("runtime_source", "official")
+        test = current_source == "test" if self.prs is None else self.prs == "test"
+        custom = current_source == "custom" if self.prs is None else isinstance(self.prs, list) and bool(self.prs)
+        installed = installed_runtime(root, state) if self.prs is None else None
+        release_error = None
+        if test:
+            from .pr_build import build_test_appimage, test_runtime
+            installed = test_runtime(root, state)
+            if self.prs == "test":
+                # Reuse the already-built test AppImage when upstream has not moved.
+                # Failed native-code validation must never force another full runtime build.
+                changed = True
+                if installed and state.get("test_commit"):
+                    from .pr_build import upstream_test_head
+                    try:
+                        current = upstream_test_head()
+                        changed = current != state["test_commit"]
+                        if not changed:
+                            self.status("log", "Upstream test has not changed (" +
+                                        current[:12] + "). Reusing the existing AppImage.")
+                    except InstallError as error:
+                        self.status("log", f"Cannot check upstream test for updates: {error}")
+                        if not self.ask("The upstream test revision could not be checked. "
+                                        "Use the existing locally built AppImage? "
+                                        "Choose No to cancel."):
+                            return "setup"
+                        changed = False
+                if changed:
+                    if not self.ask("Build the latest upstream test branch locally? "
+                                    "This is development code that may be unstable. "
+                                    "The official AppImage and your saves will be preserved."):
+                        return "setup"
+                    result = build_test_appimage(root, self.status, self.cancel, ask=self.ask)
+                    installed = result["path"]
+                    state.update({
+                        "runtime_source": "test", "test_digest": result["digest"],
+                        "test_commit": result["commit"], "test_size": result["size"],
+                        "test_mtime_ns": result["mtime_ns"],
+                    })
                     write_state(root, state)
-                except BaseException:
-                    if rollback:
-                        rollback.restore()
-                    raise
+            if not installed:
+                return "setup"
+        elif custom:
+            from .pr_build import build_pr_appimage, custom_runtime, selection_key
+            desired = selection_key(self.prs) if self.prs else state.get("custom_selection")
+            installed = custom_runtime(root, state)
+            if self.prs and (not installed or state.get("custom_selection") != desired):
+                if not self.ask("Selected PRs contain unreviewed third-party code. "
+                                "Building and running them may execute arbitrary code. "
+                                "Continue only if you trust every author. Continue?"):
+                    return "setup"
+                result = build_pr_appimage(root, self.prs, self.status, self.cancel, ask=self.ask)
+                installed = result["path"]
+                state.update({
+                    "runtime_source": "custom", "custom_digest": result["digest"],
+                    "custom_selection": result["selection"], "custom_size": result["size"],
+                    "custom_mtime_ns": result["mtime_ns"],
+                    "custom_prs": [{"number": pr["number"], "sha": pr["sha"]}
+                                   for pr in self.prs],
+                    "custom_base": result.get("base_commit"),
+                })
+                write_state(root, state)
+            if not installed:
+                return "setup"
+        else:
+            if self.prs is not None:
+                state["runtime_source"] = "official"
+                write_state(root, state)
+            self.status("stage", "Checking official releases...")
+            installed = local_release(root, state)
+            try:
+                remote = fetch_latest()
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError, InstallError) as error:
+                remote = None
+                release_error = str(error)
+                self.status("log", f"Update unavailable: {error}")
+            if remote and (not installed or state.get("official_digest") != remote["digest"]):
+                if not installed or self.ask(f"Savage Wind {remote['tag']} is available. Install it?"):
+                    self.status("reveal", f"Installing Savage Wind {remote['tag']}...")
+                    if installed:
+                        rollback = Rollback(root)
+                        self.status("stage", "Backing up the current version...")
+                        rollback.begin(dict(state))
+                    try:
+                        installed = (adopt_release(remote, root, self.status, self.cancel)
+                                     or download_release(remote, root, self.status, self.cancel))
+                        stat = installed.stat()
+                        state.update({"official_digest": remote["digest"], "official_tag": remote["tag"],
+                                      "official_size": stat.st_size, "official_mtime_ns": stat.st_mtime_ns})
+                        write_state(root, state)
+                    except BaseException:
+                        if rollback:
+                            rollback.restore()
+                        raise
         try:
             if not installed:
                 if release_error:
@@ -920,33 +1645,29 @@ class Pipeline:
                 else:
                     return "setup"
             # A rebuild is mandatory only after changing the executable or importing new game files.
-            recover_completed_code(root, installed, state, self.status)
+            if not (custom or test):
+                recover_completed_code(root, installed, state, self.status)
+            active_digest = (state.get("test_digest") if test else
+                             state.get("custom_digest") if custom else state.get("official_digest"))
             key = state.get("built_digest")
             target = cpu_target()
             cpu_changed = bool(state.get("built_cpu") and state["built_cpu"] != target)
-            if (key != state.get("official_digest") or cpu_changed or
+            if (key != active_digest or cpu_changed or
                     not compiled_code(root)):
                 self.status("reveal", "Preparando o código nativo do jogo...")
                 if cpu_changed:
                     self.status("stage", "CPU diferente detectada; preparando código nativo compatível...")
                 build_game(root, installed, self.status, self.cancel)
-                state["built_digest"] = state.get("official_digest")
+                state["built_digest"] = active_digest
                 state["built_cpu"] = target
                 write_state(root, state)
             elif not state.get("built_cpu"):
                 # Adopt a working install without forcing an unnecessary rebuild.
                 state["built_cpu"] = target
                 write_state(root, state)
-            self.status("stage", "Iniciando o Savage Wind...")
-            with (root / ".sw-wrapper/game.log").open("ab") as logfile:
-                process = subprocess.Popen([str(installed), "--play", str(game_files(root))],
-                                           env=portable_env(root, play=True), cwd=root,
-                                           start_new_session=True, stdout=subprocess.DEVNULL,
-                                           stderr=logfile, pass_fds=(self._lock_fd,))
             if rollback:
                 rollback.commit()
-            self.status("log", f"Jogo iniciado (PID {process.pid}).")
-            return "launched"
+            return self.launch_existing(root, installed)
         except BaseException:
             if rollback:
                 rollback.restore()
