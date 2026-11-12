@@ -1,4 +1,5 @@
 """Native GTK setup/progress UI, respecting the GNOME/Adwaita theme."""
+import os
 import queue
 import threading
 from pathlib import Path
@@ -14,6 +15,7 @@ from .i18n import LANGUAGES, get_language, set_language, tr, progress_text
 from .pr_build import open_prs
 from .updates import localized
 from .pause import PauseControl
+from . import swmm
 
 
 class Window(Gtk.Window):
@@ -180,6 +182,10 @@ class Window(Gtk.Window):
         self.label(self.native_button, "Recompile game code", "set_label")
         self.native_button.connect("clicked", self.recompile_game)
         mode_actions.pack_start(self.native_button, True, True, 0)
+        self.mod_button = Gtk.Button()
+        self.label(self.mod_button, "Manage Mods", "set_label")
+        self.mod_button.connect("clicked", self.manage_mods)
+        mode_actions.pack_start(self.mod_button, True, True, 0)
         self.delete_button = Gtk.Button()
         self.label(self.delete_button, "Delete installation", "set_label")
         self.delete_button.connect("clicked", self.delete_installation)
@@ -382,6 +388,7 @@ class Window(Gtk.Window):
         self.play_button.set_sensitive(existing and bool(runtime) and compiled_code(self.root))
         self.native_button.set_visible(existing and bool(runtime))
         self.build_button.set_visible(bool(runtime))
+        self.mod_button.set_sensitive(valid_game(self.root / "root") and not self.running)
         if existing:
             where = self.root / ("root" if valid_game(self.root / "root") else "extracted")
             self.source.set_text(str(where))
@@ -401,6 +408,26 @@ class Window(Gtk.Window):
                else "AppImage missing — setup required.", self.language))
         self.delete_button.set_sensitive(any((self.root / p).exists() for p in
             ("root", "game", "extracted", "SavageWind-official.AppImage", "SavageWind-custom.AppImage", "SavageWind-test.AppImage")))
+
+    def manage_mods(self, *_):
+        if self.running:
+            return
+        if not valid_game(self.root / "root"):
+            self.alert(tr("Install the game files before managing mods.", self.language))
+            return
+        if swmm.installed(self.root) is None:
+            if self.alert(tr(
+                "Download and install the verified SWMM release into portable storage?",
+                self.language), question=True):
+                self.start(None, mode="swmm_install")
+            return
+        self.open_mods()
+
+    def open_mods(self):
+        try:
+            swmm.launch(self.root, launcher=os.environ.get("APPIMAGE"))
+        except (InstallError, OSError) as error:
+            self.alert(str(error))
 
     def delete_installation(self, *_):
         if self.running:
@@ -753,6 +780,14 @@ class Window(Gtk.Window):
                     self.bar.set_fraction(1.0)
                     self.stage.set_text(tr("AppImage build completed." if event[1] == "built"
                                            else "Game code recompilation completed.", self.language))
+                elif event[1] == "swmm-installed":
+                    self.show_all()
+                    self.progress_box.hide()
+                    self.form.show_all()
+                    self.custom_toggled()
+                    self.test_toggled()
+                    self.game_status()
+                    self.open_mods()
                 elif event[1] == "setup":
                     self.show_all()
                     self.progress_box.hide()
