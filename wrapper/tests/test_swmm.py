@@ -215,6 +215,85 @@ class ManagerTests(unittest.TestCase):
                 self.assertEqual(menu.stat().st_mtime_ns, before)
                 self.assertIn("# user customization", settings.read_text())
 
+    def test_official_swmm_direct_launch_is_repaired_on_startup(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as configroot:
+            root = Path(folder)
+            (root / "root/romfs").mkdir(parents=True)
+            launcher = root / "SavageWind-Portable-x86_64.AppImage"
+            launcher.write_bytes(binary())
+            manager = root / "official-swmm"
+            manager.write_bytes(binary())
+            manager.chmod(0o755)
+            config = Path(configroot) / "SWMM/settings.yml"
+            config.parent.mkdir()
+            old = ('storage_dir: "' + str(Path(configroot) / "old-data") + '"\n'
+                   'savage_wind:\n'
+                   '  executable: "' + str(root / "SavageWind-test.AppImage") + '"\n'
+                   '  browse_gamebanana: false\n'
+                   'lang: English\n')
+            config.write_text(old)
+            env = {"APPIMAGE": str(launcher), "XDG_CONFIG_HOME": configroot,
+                   "XDG_DATA_HOME": str(Path(configroot) / "data")}
+            with mock.patch.object(swmm, "installed", return_value=manager), \
+                 mock.patch.object(swmm, "managed", return_value=None):
+                result = swmm.prepare(root, environ=env, sync_global=True)
+            self.assertEqual(result[0], manager)
+            changed = config.read_text()
+            self.assertIn('browse_gamebanana: false', changed)
+            self.assertIn('lang: English', changed)
+            self.assertIn(str(swmm.folder(root) / "bridge/savagewind"), changed)
+            self.assertIn(str(swmm.folder(root) / "external/data/SWMM"), changed)
+            self.assertEqual((swmm.folder(root) / "global-settings-before-sync.yml").read_text(),
+                             old)
+            self.assertEqual((swmm.folder(root) / "bridge/extracted").resolve(), root / "root")
+
+    def test_existing_global_mod_library_is_not_hidden(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as configroot:
+            root = Path(folder)
+            (root / "root/romfs").mkdir(parents=True)
+            image = root / "SavageWind-test.AppImage"
+            image.write_bytes(binary())
+            manager = root / "official-swmm"
+            manager.write_bytes(binary())
+            manager.chmod(0o755)
+            old = Path(configroot) / "mods"
+            (old / "mods").mkdir(parents=True)
+            (old / "mods/first.bnp").write_bytes(b"mod")
+            config = Path(configroot) / "SWMM/settings.yml"
+            config.parent.mkdir()
+            config.write_text('storage_dir: "' + str(old) + '"\n'
+                              'savage_wind:\n'
+                              '  executable: "' + str(image) + '"\n')
+            env = {"APPIMAGE": str(image), "XDG_CONFIG_HOME": configroot,
+                   "XDG_DATA_HOME": str(Path(configroot) / "data")}
+            with mock.patch.object(swmm, "installed", return_value=manager), \
+                 mock.patch.object(swmm, "managed", return_value=None):
+                swmm.prepare(root, environ=env, sync_global=True)
+            self.assertIn('storage_dir: "' + str(old) + '"', config.read_text())
+            self.assertTrue((old / "mods/first.bnp").is_file())
+
+    def test_global_swmm_config_for_another_game_is_left_unchanged(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as configroot:
+            root = Path(folder)
+            (root / "root/romfs").mkdir(parents=True)
+            image = root / "SavageWind-Portable-x86_64.AppImage"
+            image.write_bytes(binary())
+            manager = root / "official-swmm"
+            manager.write_bytes(binary())
+            manager.chmod(0o755)
+            cfg = Path(configroot) / "SWMM/settings.yml"
+            cfg.parent.mkdir()
+            original = ('storage_dir: /elsewhere\n'
+                        'savage_wind:\n  executable: /other/installation/savagewind\n')
+            cfg.write_text(original)
+            env = {"APPIMAGE": str(image), "XDG_CONFIG_HOME": configroot,
+                   "XDG_DATA_HOME": str(Path(configroot) / "data")}
+            with mock.patch.object(swmm, "installed", return_value=manager), \
+                 mock.patch.object(swmm, "managed", return_value=None):
+                swmm.prepare(root, environ=env, sync_global=True)
+            self.assertEqual(cfg.read_text(), original)
+            self.assertFalse((swmm.folder(root) / "global-settings-before-sync.yml").exists())
+
     def test_no_swmm_installed_does_not_create_shortcuts(self):
         with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as apps:
             root = Path(folder)
@@ -235,7 +314,7 @@ class ManagerTests(unittest.TestCase):
                     result = core.Pipeline(root, lambda *_: None, lambda _: False,
                                            threading.Event(), mode="launcher_check").run()
             self.assertEqual(result, "setup")
-            prepare.assert_called_once_with(root)
+            prepare.assert_called_once_with(root, sync_global=True)
 
     def test_overlay_is_forwarded_to_game_only_if_swmm_has_deployed_mods(self):
         with tempfile.TemporaryDirectory() as folder:
