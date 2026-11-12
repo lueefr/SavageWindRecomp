@@ -283,6 +283,7 @@ def _run(argv, cwd, emit, cancel, logfile, meter=None):
     clock = pause.clock if pause is not None else time.monotonic
     last_output = clock()
     last_notice = last_output
+    last_flush = last_output
     packaging = meter is not None and meter.current == 4
     if packaging:
         meter.set_activity("Preparing dependencies and packaging the AppImage")
@@ -320,6 +321,9 @@ def _run(argv, cwd, emit, cancel, logfile, meter=None):
                                 meter.tick(force=True)
                         emit("log", line, None)
                 now = clock()
+                if now - last_flush >= 2:
+                    logfile.flush()
+                    last_flush = now
                 silent = now - last_output
                 if packaging and silent >= 30 and now - last_notice >= 30:
                     state = _process_states(process.pid)
