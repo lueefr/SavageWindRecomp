@@ -327,8 +327,9 @@ def _sync_global(root, shim, storage, env):
     if changed != original:
         archive = folder(root) / "global-settings-before-sync.yml"
         if not archive.exists():
-            _atomic_text(archive, original)
-        _atomic_text(config, changed)
+            _atomic_text(archive, original, mode=0o600)
+        permissions = stat.S_IMODE(config.stat().st_mode) if config.exists() else 0o600
+        _atomic_text(config, changed, mode=permissions)
     return True, active_storage
 
 
