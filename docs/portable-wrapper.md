@@ -173,17 +173,35 @@ SWMM UI. No `--config` flag or installer window is needed. The normal
 Savage Wind AppImage keeps starting the game directly. The optional
 **Manage Mods** button in the installer is a secondary entry point.
 
+Opening the **original official SWMM** launcher directly is supported too.
+The portable launcher now synchronizes the official SWMM
+`~/.config/SWMM/settings.yml` (or `$XDG_CONFIG_HOME/SWMM/settings.yml`)
+only when its game executable is unset or already points to an AppImage in
+this portable game's folder. Its executable then points to the dummy
+`.sw-wrapper/swmm/bridge/savagewind`, whose parent contains the
+`extracted -> root/` link. This prevents the official SWMM from falling back
+to `~/.local/share/savagewind/extracted/romfs`. The original settings file is
+backed up to `.sw-wrapper/swmm/global-settings-before-sync.yml` exactly once;
+unrelated preferences, profiles and mods are preserved. If the previous
+global mod library is populated, it stays active and its overlay is also
+recognized by the portable game instead of silently hiding those mods.
+A SWMM instance already running when this synchronization occurs must be
+restarted to reload its changed settings. Configuration for another game is
+never overwritten.
+
 The SWMM-generated overlay is kept separate from `root/`, `game/` and the
 game's save files. If the SWMM profile has deployed files, the portable game
 receives their path through `SAVAGEWIND_ROMFS_OVERLAY` on startup. When
 SWMM starts the game, its explicit overlay/on-off environment takes priority.
 Removing the game installation preserves the SWMM profile and mods.
 
-Only the small application-menu shortcut is registered in the user's XDG
-applications directory; game files, SWMM settings, mods and overlays stay in
-the portable directory. The official SWMM can still perform its own Linux
-session-environment or Steam-shortcut actions; those are native SWMM behavior,
-not a modification by the portable launcher.
+In addition to the optional application-menu shortcut, the integration may
+adjust the two game-related fields in the *official* SWMM config to make the
+stock SWMM menu entry work directly. All game files remain in `root/` and
+`game/`; new isolated SWMM profiles/overlays live in the portable directory.
+A preexisting populated global mod library remains in place and is not
+silently copied or deleted. SWMM itself may still perform its native Linux
+session-environment or Steam-shortcut actions when mods are deployed.
 
 ## Requirements and limitations
 
