@@ -114,7 +114,7 @@ def test_runtime(root, state):
 
 
 SOURCE_STAGES = ("Fetch sources", "Apply pull requests", "Prepare compiler",
-                 "Compile runtime", "Package AppImage", "Publish AppImage")
+                 "Compile runtime", "Build dependencies and package AppImage", "Publish AppImage")
 
 
 def elapsed_text(seconds):
