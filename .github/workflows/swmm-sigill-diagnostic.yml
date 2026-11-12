@@ -1,0 +1,33 @@
+name: Diagnose official SWMM SIGILL
+
+on:
+  push:
+    branches:
+      - feat/portable-launcher-self-update
+    paths:
+      - .github/workflows/swmm-sigill-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-binary:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Inspect exact SWMM v0.1.3 binary at reported crash address
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --connect-timeout 15 --max-time 180 \
+            "https://github.com/ustruct/SWMM/releases/download/v0.1.3/swmm-x86_64-linux.tar.xz" \
+            -o swmm.tar.xz
+          echo "047a220d7fe9b8d9f1bce045397398267ab5f11c047cfa8e18b231e3098cc4be  swmm.tar.xz" | sha256sum -c -
+          mkdir extracted
+          tar -xJf swmm.tar.xz -C extracted
+          file extracted/swmm
+          readelf -n extracted/swmm | head -70 || true
+          echo "=== Crash address in stack trace: swmm + 0x333ca5e ==="
+          objdump -d -M intel --start-address=0x333c9e0 --stop-address=0x333cae0 extracted/swmm
+          echo "=== Other nearby frames ==="
+          objdump -d -M intel --start-address=0x333c890 --stop-address=0x333c930 extracted/swmm
