@@ -204,7 +204,7 @@ def suppressed(root, source):
 
 
 def suppress(root, source):
-    if source not in ("official", "test", "custom"):
+    if source not in ("official", "test", "custom", "launcher"):
         raise InstallError("Cannot save an unknown update preference.")
     path = _preference_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -231,6 +231,10 @@ def suppress(root, source):
 # The upstream titles and commit messages remain untouched. Only our fixed
 # headings and labels are translated; all GitHub links stay clickable.
 _LABELS = {
+    "Savage Wind Portable — Launcher update": ("Savage Wind Portable — Launcher update", "Savage Wind Portable — Обновление лаунчера", "Savage Wind Portable — 启动器更新"),
+    "Portable launcher update available": ("Portable launcher update available", "Доступно обновление портативного лаунчера", "便携启动器有可用更新"),
+    "Installed launcher:": ("Installed launcher:", "Установленный лаунчер:", "已安装启动器："),
+    "Available launcher:": ("Available launcher:", "Доступный лаунчер:", "可用启动器："),
     "Savage Wind — Atualização oficial": ("Savage Wind — Official update", "Savage Wind — Официальное обновление", "Savage Wind — 官方更新"),
     "Savage Wind — Atualização test": ("Savage Wind — Test update", "Savage Wind — Обновление test", "Savage Wind — test 更新"),
     "Savage Wind — Atualização dos PRs": ("Savage Wind — PR updates", "Savage Wind — Обновление PR", "Savage Wind — PR 更新"),
