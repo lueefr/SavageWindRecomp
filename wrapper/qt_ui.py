@@ -209,7 +209,7 @@ class Window(QWidget):
         tasks.addWidget(self.eta)
         self.step_names = ["Storage", "Game files", "Updates", "Recompilation", "Launch game"]
         self.source_steps = ["Fetch sources", "Apply pull requests", "Prepare compiler",
-                             "Compile runtime", "Package AppImage", "Publish AppImage"]
+                             "Compile runtime", "Build dependencies and package AppImage", "Publish AppImage"]
         self._source_mode = False
         self.step_view = QListWidget()
         self.step_view.setFixedHeight(128)
