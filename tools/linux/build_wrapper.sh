@@ -40,7 +40,19 @@ done
 patchelf --set-rpath '$ORIGIN/../lib' "$APPDIR/usr/bin/hactool"
 cp wrapper/__init__.py wrapper/core.py wrapper/build_progress.py wrapper/launch.py wrapper/gtk_ui.py \
     wrapper/migration.py wrapper/rollback.py wrapper/pr_build.py wrapper/deps.py wrapper/i18n.py \
-    wrapper/updates.py wrapper/runtime_tracking.py wrapper/pause.py "$APPDIR/usr/share/wrapper/"
+    wrapper/updates.py wrapper/runtime_tracking.py wrapper/pause.py wrapper/launcher_updates.py "$APPDIR/usr/share/wrapper/"
+# Record the actual checkout and release tag so preview builds cannot be mistaken for old releases.
+PORTABLE_COMMIT=$(git rev-parse HEAD 2>/dev/null || true)
+"$PYTHON" - "$APPDIR/usr/share/wrapper/launcher-version.json" "${SAVAGEWIND_PORTABLE_TAG:-}" "$PORTABLE_COMMIT" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+tag = sys.argv[2] if re.fullmatch(r"portable-v[0-9]+\.[0-9]+\.[0-9]+", sys.argv[2]) else None
+commit = sys.argv[3] if re.fullmatch(r"[0-9a-f]{40}", sys.argv[3]) else None
+Path(sys.argv[1]).write_text(json.dumps({"tag": tag, "commit": commit}, indent=2) + "\n")
+PY
 cp tools/linux/wrapper_AppRun "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
 cp tools/linux/wrapper.desktop "$APPDIR/savagewind-portable.desktop"
