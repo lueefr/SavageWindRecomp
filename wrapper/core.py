@@ -1112,7 +1112,7 @@ class Pipeline:
         self.prs = prs  # None: preserve runtime; []: official; "test": upstream test; list: PRs
         self.ask_update = ask_update
         if mode not in ("install", "build_only", "play", "native", "startup",
-                        "launcher_check"):
+                        "launcher_check", "swmm_install"):
             raise ValueError("Invalid portable installer operation")
         self.mode = mode
         self._last_progress = 0.0
@@ -1496,6 +1496,10 @@ class Pipeline:
         if (root / ".sw-wrapper").is_symlink():
             raise InstallError("A pasta .sw-wrapper não pode ser um link simbólico.")
         (root / ".sw-wrapper").mkdir(exist_ok=True)
+        if self.mode == "swmm_install":
+            from .swmm import install
+            install(root, self.status, self.cancel)
+            return "swmm-installed"
         if self.mode in ("startup", "launcher_check"):
             self.check_launcher()
         if self.mode == "launcher_check":
