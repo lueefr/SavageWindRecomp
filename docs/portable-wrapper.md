@@ -122,6 +122,26 @@ Diagnostics are saved under `.sw-wrapper/`, including `build.log` and `import.lo
 
 The previous official version and compiled artifacts can be retained for rollback when updates fail. Saves and settings are not part of that replacement.
 
+## Diagnosing long AppImage packaging stages
+
+In the upstream `test` and PR source-build paths, the stage formerly labelled
+"Package AppImage" runs `tools/linux/package.sh`. That script also downloads
+and builds pinned SDL3, FFmpeg and shaderc dependencies, compiles the Savage Wind
+executable, fetches Zig and finally runs appimagetool. A long period in this
+stage does not necessarily mean the squashfs assembly itself has stalled.
+
+The launcher now calls this **Build dependencies and package AppImage**. When
+upstream output identifies a subtask, it displays the observed subtask without
+inventing a completion percentage. If a packaging subprocess stops emitting
+output for 30 seconds, the status and the corresponding
+`.sw-wrapper/test-build.log` or `pr-build.log` report its silence duration,
+PID and available Linux process states, with further notices at 30-second
+intervals. Log data is flushed regularly so it can be inspected while building.
+A completed parent process no longer waits indefinitely when a detached child
+still holds the inherited stdout pipe open. This is a diagnostic aid, not
+proof of forward progress; if no computation is occurring, examine the log and
+cancel or resume the build as appropriate.
+
 ## Requirements and limitations
 
 - Linux x86-64 and a Vulkan-compatible GPU/driver meeting the official game's requirements.
