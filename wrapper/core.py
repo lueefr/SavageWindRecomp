@@ -89,6 +89,13 @@ def portable_env(root, base=None, play=False):
     if play:
         # The recompilation output is stored apart from the original exefs/romfs.
         env["SAVAGEWIND_GAME_LIB"] = str(data / "swgame.so")
+        # SWMM uses a filesystem overlay; never merge mods into root/ or saves.
+        # Respect an explicit SWMM-launched on/off state from its own Play button.
+        if "SAVAGEWIND_ROMFS_OVERLAY" not in env and "SWMM_LAUNCHED" not in env:
+            from .swmm import overlay
+            candidate = overlay(root)
+            if candidate is not None:
+                env["SAVAGEWIND_ROMFS_OVERLAY"] = str(candidate)
     return env
 
 
@@ -399,7 +406,7 @@ def reset_install(root, confirmation):
                     continue
                 targets.append(child)
         for child in metadata.iterdir():
-            if child.name not in ("gui.json", "update-prefs.json", "runtime-history.json", "operation.lock"):
+            if child.name not in ("gui.json", "update-prefs.json", "runtime-history.json", "operation.lock", "swmm"):
                 targets.append(child)
         # Check every affected location before making any destructive changes.
         for target in targets:
