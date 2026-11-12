@@ -142,6 +142,49 @@ still holds the inherited stdout pipe open. This is a diagnostic aid, not
 proof of forward progress; if no computation is occurring, examine the log and
 cancel or resume the build as appropriate.
 
+## SWMM: automatic mod manager integration
+
+The portable launcher also recognizes an already installed **official SWMM**
+([ustruct/SWMM](https://github.com/ustruct/SWMM)). Supported installations
+include the upstream install-script location `~/.local/share/swmm/swmm`,
+an executable on `PATH`, and the optional SWMM archive installed inside the
+portable launcher itself. **No network access or shell installer is needed**
+for detection, and an existing system SWMM installation is never overwritten.
+
+When the portable launcher starts normally and `root/romfs` is available,
+it silently prepares:
+
+- `.sw-wrapper/swmm/bridge/extracted` → a symlink to the portable `root/`,
+  preserving the user's decompiled game files in their original location
+- `.sw-wrapper/swmm/bridge/savagewind` → a small executable shim to the
+  portable AppImage's `--mods-play` entry point, so SWMM's own **Play** button
+  still uses the portable game's saves, configuration and compiled code
+- A per-installation SWMM config and storage folder (with the stock
+  `savage_wind.executable` and `storage_dir` fields populated). Installed
+  SWMM stores its profiles, mods and generated overlay here rather than in
+  the user's unrelated system-wide SWMM profile
+- The convenient **Savage Wind Portable - Mods** application-menu entry
+  (`savagewind-portable-mods-<id>.desktop`) and a
+  `SavageWind-Mods.desktop` shortcut beside the portable AppImage
+
+Open **Savage Wind Portable - Mods** in the KDE/GNOME application menu, or
+open the desktop shortcut beside the AppImage, to use the unmodified official
+SWMM UI. No `--config` flag or installer window is needed. The normal
+Savage Wind AppImage keeps starting the game directly. The optional
+**Manage Mods** button in the installer is a secondary entry point.
+
+The SWMM-generated overlay is kept separate from `root/`, `game/` and the
+game's save files. If the SWMM profile has deployed files, the portable game
+receives their path through `SAVAGEWIND_ROMFS_OVERLAY` on startup. When
+SWMM starts the game, its explicit overlay/on-off environment takes priority.
+Removing the game installation preserves the SWMM profile and mods.
+
+Only the small application-menu shortcut is registered in the user's XDG
+applications directory; game files, SWMM settings, mods and overlays stay in
+the portable directory. The official SWMM can still perform its own Linux
+session-environment or Steam-shortcut actions; those are native SWMM behavior,
+not a modification by the portable launcher.
+
 ## Requirements and limitations
 
 - Linux x86-64 and a Vulkan-compatible GPU/driver meeting the official game's requirements.
