@@ -1174,7 +1174,19 @@ class Pipeline:
             self.status("log", f"Portable launcher update failed: {error}", None)
             self.emit("launcher-error", str(error), None)
 
+    def sync_swmm(self):
+        """Silently prepare installed SWMM even when the installer GUI stays hidden."""
+        from .swmm import prepare
+        try:
+            prepared = prepare(self.root)
+            if prepared is not None:
+                self.status("log", "Existing SWMM detected; portable mod paths and "
+                            "application-menu shortcut are ready.", None)
+        except (InstallError, OSError) as error:
+            self.status("log", f"Optional SWMM setup could not complete: {error}", None)
+
     def launch_existing(self, root, installed):
+        self.sync_swmm()
         self.status("stage", "Iniciando o Savage Wind...")
         with (root / ".sw-wrapper/game.log").open("ab") as logfile:
             process = subprocess.Popen([str(installed), "--play", str(game_files(root))],
@@ -1496,6 +1508,9 @@ class Pipeline:
         if (root / ".sw-wrapper").is_symlink():
             raise InstallError("A pasta .sw-wrapper não pode ser um link simbólico.")
         (root / ".sw-wrapper").mkdir(exist_ok=True)
+        # This runs on an ordinary AppImage launch, not only with --config.
+        # No network calls and no SWMM GUI; absent managers are ignored.
+        self.sync_swmm()
         if self.mode == "swmm_install":
             from .swmm import install
             install(root, self.status, self.cancel)
@@ -1541,6 +1556,7 @@ class Pipeline:
                 state["ignored_legacy"] = str(legacy)
                 write_state(root, state)
         portable_env(root)
+        self.sync_swmm()
         state = read_state(root)
         if self.mode == "startup":
             if not installed_runtime(root, state) and untracked_appimage(root):
