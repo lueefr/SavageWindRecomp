@@ -1,4 +1,5 @@
 """Native Qt setup/progress UI, using the system KDE widget theme."""
+import os
 import queue
 import threading
 from pathlib import Path
@@ -17,6 +18,7 @@ from .i18n import LANGUAGES, get_language, set_language, tr, progress_text
 from .pr_build import open_prs
 from .updates import localized
 from .pause import PauseControl
+from . import swmm
 
 
 class Window(QWidget):
@@ -189,6 +191,10 @@ class Window(QWidget):
         self.label(self.native_button, "Recompile game code")
         self.native_button.clicked.connect(self.recompile_game)
         mode_actions.addWidget(self.native_button)
+        self.mod_button = QPushButton()
+        self.label(self.mod_button, "Manage Mods")
+        self.mod_button.clicked.connect(self.manage_mods)
+        mode_actions.addWidget(self.mod_button)
         self.delete_button = QPushButton()
         self.label(self.delete_button, "Delete installation")
         self.delete_button.clicked.connect(self.delete_installation)
@@ -373,6 +379,7 @@ class Window(QWidget):
         self.play_button.setEnabled(existing and bool(runtime) and compiled_code(self.root))
         self.native_button.setVisible(existing and bool(runtime))
         self.build_button.setVisible(bool(runtime))
+        self.mod_button.setEnabled(valid_game(self.root / "root") and not self.running)
         if existing:
             where = self.root / ("root" if valid_game(self.root / "root") else "extracted")
             self.source.setText(str(where))
@@ -392,6 +399,31 @@ class Window(QWidget):
                else "AppImage missing — setup required.", self.language))
         self.delete_button.setEnabled(any((self.root / p).exists() for p in
             ("root", "game", "extracted", "SavageWind-official.AppImage", "SavageWind-custom.AppImage", "SavageWind-test.AppImage")))
+
+    def manage_mods(self):
+        if self.running:
+            return
+        if not valid_game(self.root / "root"):
+            QMessageBox.warning(self, "SWMM",
+                tr("Install the game files before managing mods.", self.language))
+            return
+        if swmm.installed(self.root) is None:
+            answer = QMessageBox.question(
+                self, "SWMM",
+                tr("Download and install the verified SWMM release into portable storage?",
+                   self.language),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if answer == QMessageBox.StandardButton.Yes:
+                self.start(None, mode="swmm_install")
+            return
+        self.open_mods()
+
+    def open_mods(self):
+        try:
+            swmm.launch(self.root, launcher=os.environ.get("APPIMAGE"))
+        except (InstallError, OSError) as error:
+            QMessageBox.warning(self, "SWMM", str(error))
 
     def delete_installation(self):
         if self.running:
@@ -753,6 +785,11 @@ class Window(QWidget):
                                           else "Game code recompilation completed.", self.language))
                     self.bar.setRange(0, 100)
                     self.bar.setValue(100)
+                elif event[1] == "swmm-installed":
+                    self.progress_box.hide()
+                    self.form.show()
+                    self.game_status()
+                    self.open_mods()
                 elif event[1] == "setup":
                     self.progress_box.hide()
                     self.form.show()
