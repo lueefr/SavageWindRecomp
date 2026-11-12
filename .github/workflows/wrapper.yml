@@ -101,6 +101,7 @@ jobs:
       - name: Build portable AppImage
         env:
           QT_QPA_PLATFORM: offscreen
+          SAVAGEWIND_PORTABLE_TAG: ${{ needs.plan.outputs.tag }}
         run: bash tools/linux/build_wrapper.sh x86_64
       - name: Verify portable AppImage layout
         run: |
@@ -120,6 +121,8 @@ jobs:
           test ! -e squashfs-root/usr/share/savagewind-builder
           test -f squashfs-root/usr/share/wrapper/build_progress.py
           test -f squashfs-root/usr/share/wrapper/core.py
+          test -s squashfs-root/usr/share/wrapper/launcher_updates.py
+          test -s squashfs-root/usr/share/wrapper/launcher-version.json
           test -f squashfs-root/usr/share/wrapper/rollback.py
           test -f squashfs-root/usr/share/wrapper/migration.py
           LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib" squashfs-root/usr/bin/hactool 2>&1 | head -10 || true
