@@ -40,7 +40,8 @@ done
 patchelf --set-rpath '$ORIGIN/../lib' "$APPDIR/usr/bin/hactool"
 cp wrapper/__init__.py wrapper/core.py wrapper/build_progress.py wrapper/launch.py wrapper/gtk_ui.py \
     wrapper/migration.py wrapper/rollback.py wrapper/pr_build.py wrapper/deps.py wrapper/i18n.py \
-    wrapper/updates.py wrapper/runtime_tracking.py wrapper/pause.py wrapper/launcher_updates.py "$APPDIR/usr/share/wrapper/"
+    wrapper/updates.py wrapper/runtime_tracking.py wrapper/pause.py wrapper/launcher_updates.py \
+    wrapper/swmm.py "$APPDIR/usr/share/wrapper/"
 # Record the actual checkout and release tag so preview builds cannot be mistaken for old releases.
 PORTABLE_COMMIT=$(git rev-parse HEAD 2>/dev/null || true)
 "$PYTHON" - "$APPDIR/usr/share/wrapper/launcher-version.json" "${SAVAGEWIND_PORTABLE_TAG:-}" "$PORTABLE_COMMIT" <<'PY'
