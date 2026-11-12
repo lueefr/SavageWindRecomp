@@ -125,12 +125,15 @@ class ManagerTests(unittest.TestCase):
             root = Path(folder)
             appimage = root / "SavageWind-Portable-x86_64.AppImage"
             appimage.write_bytes(binary())
+            (root / "root/romfs").mkdir(parents=True)
             shim = swmm._shim(root, str(appimage))
             self.assertTrue(os.access(shim, os.X_OK))
             script = shim.read_text()
             self.assertIn("--mods-play --root", script)
             self.assertIn(str(appimage), script)
             self.assertNotIn("curl", script)
+            self.assertEqual(shim.parent / "extracted", swmm.folder(root) / "bridge/extracted")
+            self.assertEqual((shim.parent / "extracted").resolve(), root / "root")
 
     def test_external_swmm_remains_unmodified_and_uses_isolated_xdg(self):
         with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as external:
@@ -143,8 +146,9 @@ class ManagerTests(unittest.TestCase):
             image.write_bytes(binary())
             with mock.patch.object(swmm, "installed", return_value=manager):
                 with mock.patch.object(swmm, "managed", return_value=None):
-                    with mock.patch.object(swmm.subprocess, "Popen") as popen:
-                        swmm.launch(root, launcher=str(image))
+                    with mock.patch.object(swmm, "_shortcuts"):
+                        with mock.patch.object(swmm.subprocess, "Popen") as popen:
+                            swmm.launch(root, launcher=str(image))
             args, kwargs = popen.call_args
             self.assertEqual(args[0], [str(manager)])
             self.assertIn(str(root / ".sw-wrapper/swmm/external"), kwargs["env"]["XDG_CONFIG_HOME"])
@@ -163,13 +167,75 @@ class ManagerTests(unittest.TestCase):
             (root / "root/romfs").mkdir(parents=True)
             image = root / "SavageWind-Portable-x86_64.AppImage"
             image.write_bytes(binary())
-            with mock.patch.object(swmm.subprocess, "Popen") as popen:
-                swmm.launch(root, launcher=str(image))
+            with mock.patch.object(swmm, "_shortcuts"):
+                with mock.patch.object(swmm.subprocess, "Popen") as popen:
+                    swmm.launch(root, launcher=str(image))
             args, kwargs = popen.call_args
             self.assertEqual(args[0], [str(manager), "--portable"])
             self.assertEqual(kwargs["env"]["SAVAGEWIND_DATA_ROOT"],
                              str(root / ".sw-wrapper/swmm/bridge"))
             self.assertTrue((swmm.folder(root) / "config/settings.yml").is_file())
+
+    def test_existing_official_manager_registers_portable_menu_shortcut(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as apps:
+            root = Path(folder)
+            (root / "root/romfs").mkdir(parents=True)
+            launcher = root / "SavageWind-Portable-x86_64.AppImage"
+            launcher.write_bytes(binary())
+            manager = root / "official-bin/swmm"
+            manager.parent.mkdir()
+            manager.write_bytes(binary())
+            manager.chmod(0o755)
+            env = {"APPIMAGE": str(launcher), "XDG_DATA_HOME": str(Path(apps) / "share")}
+            with mock.patch.object(swmm, "installed", return_value=manager), \
+                 mock.patch.object(swmm, "managed", return_value=None):
+                result = swmm.prepare(root, environ=env)
+                self.assertEqual(result[0], manager)
+                self.assertEqual(result[1], [str(manager)])
+                self.assertEqual(result[2]["SAVAGEWIND_DATA_ROOT"],
+                                 str(swmm.folder(root) / "bridge"))
+                self.assertEqual(result[2]["HOME"],
+                                 str(swmm.folder(root) / "external/home"))
+                menu = swmm._shortcut_path(root, env)
+                self.assertTrue(menu.is_file())
+                desktop = menu.read_text()
+                self.assertIn("Savage Wind Portable - Mods", desktop)
+                self.assertIn(" --mods", desktop)
+                self.assertNotIn("--config", desktop)
+                self.assertIn(str(launcher), desktop)
+                self.assertEqual((root / "SavageWind-Mods.desktop").read_text(), desktop)
+                self.assertEqual((swmm.folder(root) / "bridge/extracted").resolve(),
+                                 root / "root")
+                self.assertIn("executable: ", (swmm.folder(root) /
+                    "external/config/SWMM/settings.yml").read_text())
+                before = menu.stat().st_mtime_ns
+                settings = swmm.folder(root) / "external/config/SWMM/settings.yml"
+                settings.write_text(settings.read_text() + "\n# user customization\n")
+                swmm.prepare(root, environ=env)
+                self.assertEqual(menu.stat().st_mtime_ns, before)
+                self.assertIn("# user customization", settings.read_text())
+
+    def test_no_swmm_installed_does_not_create_shortcuts(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as apps:
+            root = Path(folder)
+            (root / "root/romfs").mkdir(parents=True)
+            launcher = root / "SavageWind-Portable-x86_64.AppImage"
+            launcher.write_bytes(binary())
+            env = {"APPIMAGE": str(launcher), "XDG_DATA_HOME": apps}
+            with mock.patch.object(swmm, "installed", return_value=None):
+                self.assertIsNone(swmm.prepare(root, environ=env))
+            self.assertFalse((root / "SavageWind-Mods.desktop").exists())
+            self.assertFalse(swmm._shortcut_path(root, env).exists())
+
+    def test_auto_prepare_runs_on_normal_start_without_opening_swmm(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with mock.patch.object(swmm, "prepare", return_value=(True, [], {})) as prepare:
+                with mock.patch("wrapper.launcher_updates.check", return_value=None):
+                    result = core.Pipeline(root, lambda *_: None, lambda _: False,
+                                           threading.Event(), mode="launcher_check").run()
+            self.assertEqual(result, "setup")
+            prepare.assert_called_once_with(root)
 
     def test_overlay_is_forwarded_to_game_only_if_swmm_has_deployed_mods(self):
         with tempfile.TemporaryDirectory() as folder:
