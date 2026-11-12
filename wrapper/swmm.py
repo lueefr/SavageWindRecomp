@@ -45,7 +45,8 @@ def external():
 
 
 def installed(root):
-    return managed(root) or external()
+    # Prefer the user's official system installation, without installing a duplicate.
+    return external() or managed(root)
 
 
 def _release():
@@ -174,7 +175,7 @@ def _bridge(root):
 def _shim(root, launcher):
     """The Play button in SWMM enters the portable launcher, not a separate game root."""
     root = Path(root).resolve()
-    executable = folder(root) / "savagewind"
+    executable = _bridge(root) / "savagewind"
     if executable.is_symlink():
         raise InstallError("SWMM game launcher cannot be a symbolic link.")
     if launcher is None:
@@ -210,34 +211,124 @@ def _settings(path, shim, storage):
         )
 
 
-def launch(root, launcher=None):
+def _shortcut_path(root, env):
+    """A distinct app-menu entry per portable game; never replace SWMM's own entry."""
+    applications = Path(env.get("XDG_DATA_HOME") or
+                        (Path.home() / ".local/share")) / "applications"
+    fingerprint = hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()[:12]
+    return applications / f"savagewind-portable-mods-{fingerprint}.desktop"
+
+
+def _desktop_quote(path):
+    """Escape a single Desktop Entry Exec argument, not a shell command."""
+    value = str(path).replace("\\", "\\\\").replace('"', '\\"')
+    value = value.replace("$", "\\$").replace("\x60", "\\\x60").replace("%", "%%")
+    return '"' + value + '"'
+
+
+def _atomic_text(path, text, mode=0o644):
+    path = Path(path)
+    if path.is_symlink():
+        raise InstallError(f"Refusing to overwrite a symbolic link: {path}")
+    if path.exists() and not path.is_file():
+        raise InstallError(f"Not a regular shortcut file: {path}")
+    if path.is_file() and path.read_text(encoding="utf-8") == text:
+        return
+    if path.parent.is_symlink():
+        raise InstallError(f"Refusing to write through a symbolic link: {path.parent}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".mods-desktop-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            output.write(text)
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _shortcuts(root, launcher, manager, env):
+    """Offer a normal application-menu shortcut without needing --config."""
+    launcher = Path(launcher).resolve()
+    root = Path(root).resolve()
+    icon = folder(root) / "swmm.png"
+    if not icon.is_file() and not icon.is_symlink():
+        icon = manager.parent / "swmm.png"
+    icon_value = str(icon) if icon.is_file() and not icon.is_symlink() else "applications-games"
+    entry = "\n".join((
+        "[Desktop Entry]",
+        "Type=Application",
+        "Name=Savage Wind Portable - Mods",
+        "Comment=Manage portable Savage Wind mods with the official SWMM",
+        "Exec=" + _desktop_quote(launcher) + " --mods",
+        "Icon=" + icon_value,
+        "Terminal=false",
+        "Categories=Game;Utility;",
+        "StartupNotify=true",
+        "",
+    ))
+    _atomic_text(root / "SavageWind-Mods.desktop", entry)
+    _atomic_text(_shortcut_path(root, env), entry)
+
+
+def prepare(root, launcher=None, register=True, environ=None):
+    """Automatically bridge an existing SWMM installation on every portable launch.
+
+    Never start SWMM or install packages here. The official executable, its
+    profiles, configuration, cache and overlay stay distinct from game files.
+    """
     root = Path(root).resolve()
     manager = installed(root)
-    if manager is None:
-        raise InstallError("SWMM is not installed. Choose Install SWMM first.")
-    bridge = _bridge(root)
+    if manager is None or not (root / "root/romfs").is_dir():
+        return None
+    env = dict(os.environ if environ is None else environ)
+    launcher = launcher or env.get("APPIMAGE")
+    if not launcher:
+        return None
     shim = _shim(root, launcher)
-    env = dict(os.environ)
+    bridge = shim.parent
     env["SAVAGEWIND_DATA_ROOT"] = str(bridge)
-    # Never let an enclosing launcher AppImage inject Qt/GTK libraries into SWMM.
+    # Do not inherit AppImage's bundled libraries or a different game's overlay.
     for key in ("APPIMAGE", "APPDIR", "LD_LIBRARY_PATH", "LD_PRELOAD",
-                "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH", "PYTHONPATH", "PYTHONHOME"):
+                "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH", "PYTHONPATH",
+                "PYTHONHOME", "SAVAGEWIND_ROMFS_OVERLAY"):
         env.pop(key, None)
     local = manager == managed(root)
     if local:
         config = folder(root) / "config/settings.yml"
         storage = folder(root) / "data"
-        _settings(config, shim, storage)
         command = [str(manager), "--portable"]
+        base = folder(root)
     else:
-        # Honor a globally installed binary without writing to its global config.
+        # Keep the user-installed official SWMM binary unchanged. Never overwrite
+        # the user's global SWMM settings, profiles or application launcher.
         base = folder(root) / "external"
-        env["XDG_CONFIG_HOME"] = str(base / "config")
-        env["XDG_DATA_HOME"] = str(base / "data")
         config = base / "config/SWMM/settings.yml"
         storage = base / "data/SWMM"
-        _settings(config, shim, storage)
         command = [str(manager)]
+    _settings(config, shim, storage)
+    # The stock Linux SWMM also uses XDG and system services. Keep its files in
+    # this portable installation without changing any existing global config.
+    home = base / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    env["HOME"] = str(home)
+    if not local:
+        env["XDG_CONFIG_HOME"] = str(base / "config")
+        env["XDG_DATA_HOME"] = str(base / "data")
+    env["XDG_CACHE_HOME"] = str(base / "cache")
+    env["XDG_STATE_HOME"] = str(base / "state")
+    if register:
+        _shortcuts(root, launcher, manager, os.environ if environ is None else environ)
+    return manager, command, env
+
+
+def launch(root, launcher=None):
+    root = Path(root).resolve()
+    result = prepare(root, launcher=launcher)
+    if result is None:
+        raise InstallError("SWMM or the extracted game files are unavailable.")
+    manager, command, env = result
     log = folder(root) / "swmm.log"
     with log.open("ab") as output:
         return subprocess.Popen(command, cwd=manager.parent, env=env,
