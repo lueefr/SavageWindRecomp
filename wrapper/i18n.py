@@ -45,6 +45,7 @@ CATALOG = {
     "Prepare compiler": ("Preparar compilador", "Подготовить компилятор", "准备编译器"),
     "Compile runtime": ("Compilar executável", "Сборка программы", "编译程序"),
     "Package AppImage": ("Empacotar AppImage", "Упаковать AppImage", "打包 AppImage"),
+    "Build dependencies and package AppImage": ("Compilar dependências e empacotar AppImage", "Сборка зависимостей и упаковка AppImage", "构建依赖项并打包 AppImage"),
     "Publish AppImage": ("Validar e salvar AppImage", "Проверить и сохранить AppImage", "验证并保存 AppImage"),
     "Select test or pull requests to compile an AppImage.": ("Selecione a branch test ou algum PR para compilar um AppImage.", "Выберите ветку test или PR для сборки AppImage.", "请选择 test 分支或拉取请求来构建 AppImage。"),
     "Please import game files before recompiling.": ("Importe os arquivos do jogo antes de recompilar.", "Импортируйте игровые файлы перед перекомпиляцией.", "重新编译前请导入游戏文件。"),
