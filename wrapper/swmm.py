@@ -475,6 +475,7 @@ def overlay(root):
     root = Path(root).resolve()
     candidates = [folder(root) / "data/overlay",
                   folder(root) / "external/data/SWMM/overlay"]
+    trusted_global = None
     try:
         global_config = _global_path(os.environ)
         if global_config.is_file() and not global_config.is_symlink():
@@ -487,13 +488,14 @@ def overlay(root):
                         folder(root) / "data", folder(root) / "external/data/SWMM"):
                     # Existing mod profiles remain active in their original folder;
                     # do not lose them simply because portable integration was enabled.
-                    candidates.insert(0, storage / "overlay")
+                    trusted_global = storage / "overlay"
+                    candidates.insert(0, trusted_global)
     except (OSError, ValueError, InstallError):
         pass
     for path in candidates:
         if path.is_symlink() or not path.is_dir():
             continue
-        if not path.resolve().is_relative_to(folder(root)):
+        if path != trusted_global and not path.resolve().is_relative_to(folder(root)):
             continue
         for _, _, filenames in os.walk(path):
             if filenames:
