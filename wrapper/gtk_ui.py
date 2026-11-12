@@ -199,7 +199,7 @@ class Window(Gtk.Window):
         self.progress_box.pack_start(self.eta, False, False, 0)
         self.step_names = ["Storage", "Game files", "Updates", "Recompilation", "Launch game"]
         self.source_steps = ["Fetch sources", "Apply pull requests", "Prepare compiler",
-                             "Compile runtime", "Package AppImage", "Publish AppImage"]
+                             "Compile runtime", "Build dependencies and package AppImage", "Publish AppImage"]
         self._source_mode = False
         self.step_labels = []
         for name in range(max(len(self.step_names), len(self.source_steps))):
