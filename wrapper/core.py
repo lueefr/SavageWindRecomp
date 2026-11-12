@@ -1104,7 +1104,8 @@ class Pipeline:
         self.emit, self.ask, self.cancel = emit, ask, cancel
         self.prs = prs  # None: preserve runtime; []: official; "test": upstream test; list: PRs
         self.ask_update = ask_update
-        if mode not in ("install", "build_only", "play", "native", "startup"):
+        if mode not in ("install", "build_only", "play", "native", "startup",
+                        "launcher_check"):
             raise ValueError("Invalid portable installer operation")
         self.mode = mode
         self._last_progress = 0.0
@@ -1129,6 +1130,42 @@ class Pipeline:
                 return
             self._last_log = now
         self.emit(kind, message, fraction)
+
+    def check_launcher(self):
+        """The portable launcher's releases are distinct from game runtime updates."""
+        from .updates import suppress, suppressed
+        from .launcher_updates import check, install
+
+        if suppressed(self.root, "launcher"):
+            return
+        try:
+            update = check(self.root)
+        except Exception as error:
+            self.status("log", f"Launcher update check unavailable: {error}", None)
+            return
+        if update is None:
+            return
+        if self.ask_update is not None:
+            accepted, stop_asking = self.ask_update(update)
+        else:
+            accepted, stop_asking = self.ask(
+                "A new portable launcher is available. Update now?"), False
+        if stop_asking:
+            suppress(self.root, "launcher")
+        if not accepted:
+            self.status("log", "Portable launcher update declined.", None)
+            return
+        self.status("reveal", "Updating the portable launcher...", None)
+        try:
+            install(self.root, update, self.status, self.cancel)
+            self.status("log", "The portable launcher will use the new version "
+                        "when started next time.", None)
+        except Cancelled:
+            raise
+        except Exception as error:
+            # A failed self-update must not prevent an existing game from starting.
+            self.status("log", f"Portable launcher update failed: {error}", None)
+            self.emit("launcher-error", str(error), None)
 
     def launch_existing(self, root, installed):
         self.status("stage", "Iniciando o Savage Wind...")
@@ -1452,6 +1489,10 @@ class Pipeline:
         if (root / ".sw-wrapper").is_symlink():
             raise InstallError("A pasta .sw-wrapper não pode ser um link simbólico.")
         (root / ".sw-wrapper").mkdir(exist_ok=True)
+        if self.mode in ("startup", "launcher_check"):
+            self.check_launcher()
+        if self.mode == "launcher_check":
+            return "setup"
         if self.mode == "build_only":
             result = self.build_source_only()
             if result != "built":
