@@ -437,9 +437,11 @@ def prepare(root, launcher=None, register=True, environ=None, sync_global=False)
         try:
             _sync_global(root, shim, storage, os.environ if environ is None else environ)
         except (OSError, ValueError, InstallError) as error:
-            # Keep normal Savage Wind launches working if the user customized
-            # the global SWMM config or it is not writable.
-            pass
+            # SWMM is optional; keep an existing game working even if its global
+            # settings were customized or are not writable.
+            diagnostic = folder(root) / "swmm-integration.log"
+            with diagnostic.open("a", encoding="utf-8") as output:
+                output.write(f"Could not synchronize official SWMM configuration: {error}\n")
     # The stock Linux SWMM also uses XDG and system services. Keep its files in
     # this portable installation without changing any existing global config.
     home = base / "home"
@@ -469,10 +471,25 @@ def launch(root, launcher=None):
 
 
 def overlay(root):
-    """Use SWMM's default portable deployment while preserving user-selected env."""
+    """Locate the overlay of this portable game, including existing official SWMM profiles."""
     root = Path(root).resolve()
     candidates = [folder(root) / "data/overlay",
                   folder(root) / "external/data/SWMM/overlay"]
+    try:
+        global_config = _global_path(os.environ)
+        if global_config.is_file() and not global_config.is_symlink():
+            _, _, _, old_storage, selected = _read_global(
+                global_config.read_text(encoding="utf-8"))
+            shim = folder(root) / "bridge/savagewind"
+            if selected and Path(selected) == shim and old_storage:
+                storage = Path(old_storage)
+                if storage.is_absolute() and storage not in (
+                        folder(root) / "data", folder(root) / "external/data/SWMM"):
+                    # Existing mod profiles remain active in their original folder;
+                    # do not lose them simply because portable integration was enabled.
+                    candidates.insert(0, storage / "overlay")
+    except (OSError, ValueError, InstallError):
+        pass
     for path in candidates:
         if path.is_symlink() or not path.is_dir():
             continue
