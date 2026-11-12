@@ -154,6 +154,8 @@ def install(root, emit, cancel):
 def _bridge(root):
     """Expose root/ as extracted/ to SWMM without touching the native game files."""
     root = Path(root).resolve()
+    if (root / ".sw-wrapper").is_symlink() or folder(root).is_symlink():
+        raise InstallError("SWMM portable storage cannot be a symbolic link.")
     original = root / "root"
     if original.is_symlink() or not (original / "romfs").is_dir():
         raise InstallError("Install the extracted game files in root/ before using SWMM.")
@@ -186,6 +188,10 @@ def _shim(root, launcher):
     script = ("#!/bin/sh\n"
               "exec " + shlex.quote(str(launcher)) + " --mods-play --root " +
               shlex.quote(str(root)) + " \"$@\"\n")
+    if executable.is_file() and executable.read_text(encoding="utf-8") == script:
+        if not os.access(executable, os.X_OK):
+            executable.chmod(0o755)
+        return executable
     fd, temporary = tempfile.mkstemp(prefix=".swmm-launch-", dir=executable.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as file:
@@ -213,8 +219,10 @@ def _settings(path, shim, storage):
 
 def _shortcut_path(root, env):
     """A distinct app-menu entry per portable game; never replace SWMM's own entry."""
-    applications = Path(env.get("XDG_DATA_HOME") or
-                        (Path.home() / ".local/share")) / "applications"
+    data_home = Path(env.get("XDG_DATA_HOME") or (Path.home() / ".local/share"))
+    if not data_home.is_absolute():
+        data_home = Path.home() / ".local/share"
+    applications = data_home / "applications"
     fingerprint = hashlib.sha256(str(Path(root).resolve()).encode()).hexdigest()[:12]
     return applications / f"savagewind-portable-mods-{fingerprint}.desktop"
 
