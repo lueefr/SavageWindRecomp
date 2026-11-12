@@ -1180,7 +1180,7 @@ class Pipeline:
         """Silently prepare installed SWMM even when the installer GUI stays hidden."""
         from .swmm import prepare
         try:
-            prepared = prepare(self.root)
+            prepared = prepare(self.root, sync_global=True)
             if prepared is not None:
                 self.status("log", "Existing SWMM detected; portable mod paths and "
                             "application-menu shortcut are ready.", None)
