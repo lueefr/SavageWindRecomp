@@ -122,6 +122,7 @@ jobs:
           test -f squashfs-root/usr/share/wrapper/build_progress.py
           test -f squashfs-root/usr/share/wrapper/core.py
           test -s squashfs-root/usr/share/wrapper/launcher_updates.py
+          test -s squashfs-root/usr/share/wrapper/swmm.py
           test -s squashfs-root/usr/share/wrapper/launcher-version.json
           test -f squashfs-root/usr/share/wrapper/rollback.py
           test -f squashfs-root/usr/share/wrapper/migration.py
