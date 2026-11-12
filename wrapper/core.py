@@ -89,9 +89,11 @@ def portable_env(root, base=None, play=False):
     if play:
         # The recompilation output is stored apart from the original exefs/romfs.
         env["SAVAGEWIND_GAME_LIB"] = str(data / "swgame.so")
-        # SWMM uses a filesystem overlay; never merge mods into root/ or saves.
-        # Respect an explicit SWMM-launched on/off state from its own Play button.
-        if "SAVAGEWIND_ROMFS_OVERLAY" not in env and "SWMM_LAUNCHED" not in env:
+        # On normal launches do not inherit an unrelated system/session SWMM
+        # overlay. Prefer only this portable installation's deployed mod files.
+        # SWMM's own Play button retains its explicit overlay/on-off choice.
+        if "SWMM_LAUNCHED" not in env:
+            env.pop("SAVAGEWIND_ROMFS_OVERLAY", None)
             from .swmm import overlay
             candidate = overlay(root)
             if candidate is not None:
