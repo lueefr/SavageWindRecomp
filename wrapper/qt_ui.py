@@ -255,9 +255,8 @@ class Window(QWidget):
         if self.autostart:
             self.form.hide()
             QTimer.singleShot(0, lambda: self.start(None, mode="startup"))
-        elif (autoplay and not installed_runtime(self.root, state)
-              and not untracked_appimage(self.root)):
-            QTimer.singleShot(0, self.prompt_initial_source)
+        elif autoplay:
+            QTimer.singleShot(0, lambda: self.start(None, mode="launcher_check"))
 
     def label(self, widget, message, setter="setText"):
         self.local_labels.append((widget, message, setter))
@@ -595,8 +594,9 @@ class Window(QWidget):
         self.pause_control = PauseControl()
         self.cancel_event.pause = self.pause_control
         self.running = True
-        self.form.hide()
-        self.progress_box.show()
+        if mode != "launcher_check":
+            self.form.hide()
+            self.progress_box.show()
         self.back_button.hide()
         self.cancel_button.setEnabled(True)
         self.pause_button.setEnabled(True)
@@ -700,6 +700,9 @@ class Window(QWidget):
                 else:
                     self.bar.setRange(0, 100)
                     self.bar.setValue(int(fraction))
+            elif event[0] == "launcher-error":
+                QMessageBox.warning(self if self.isVisible() else None,
+                                    "Savage Wind Portable", event[1])
             elif event[0] == "update-question":
                 _, info, answer, gate = event
                 try:
