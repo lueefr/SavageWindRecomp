@@ -604,8 +604,9 @@ class Window(Gtk.Window):
         self.cancel_event = threading.Event()
         self.pause_control = PauseControl()
         self.cancel_event.pause = self.pause_control
-        self.form.hide()
-        self.progress_box.show_all()
+        if mode != "launcher_check":
+            self.form.hide()
+            self.progress_box.show_all()
         self.back_button.hide()
         self.log_expander.set_expanded(False)
         self.cancel_button.set_sensitive(True)
@@ -706,6 +707,8 @@ class Window(Gtk.Window):
                     self.bar.pulse()
                 else:
                     self.bar.set_fraction(float(fraction) / 100)
+            elif event[0] == "launcher-error":
+                self.alert(event[1])
             elif event[0] == "update-question":
                 _, info, answer, gate = event
                 try:
@@ -798,8 +801,7 @@ def run(root, selftest=False, autoplay=True):
         window.test_toggled()
         window.game_status()
         window.progress_box.hide()
-        if (autoplay and not installed_runtime(root, read_state(root))
-                and not untracked_appimage(root)):
-            GLib.idle_add(window.prompt_initial_source)
+        if autoplay:
+            GLib.idle_add(lambda: window.start(None, mode="launcher_check") or False)
     Gtk.main()
     return 0
