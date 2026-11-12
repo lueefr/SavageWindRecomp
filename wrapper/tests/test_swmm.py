@@ -252,6 +252,10 @@ class ManagerTests(unittest.TestCase):
             self.assertEqual(env["SAVAGEWIND_ROMFS_OVERLAY"], "/specific-overlay")
             env = core.portable_env(root, base={"SWMM_LAUNCHED": "1"}, play=True)
             self.assertNotIn("SAVAGEWIND_ROMFS_OVERLAY", env)
+            env = core.portable_env(root, base={
+                "SAVAGEWIND_ROMFS_OVERLAY": "/other-game/overlay"}, play=True)
+            self.assertEqual(env["SAVAGEWIND_ROMFS_OVERLAY"],
+                             str(swmm.folder(root) / "data/overlay"))
 
     def test_reset_preserves_swmm_profiles_and_settings(self):
         with tempfile.TemporaryDirectory() as folder:
