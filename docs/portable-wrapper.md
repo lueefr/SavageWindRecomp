@@ -74,6 +74,42 @@ first releases the frozen process groups and then proceeds through normal
 cancellation and cleanup. Progress indicators remain frozen while paused.
 The game itself is not suspended by this control.
 
+## Automatic updates for the portable launcher itself
+
+The launcher independently checks **versioned releases of this fork**
+([lueefr/SavageWindRecomp](https://github.com/lueefr/SavageWindRecomp/releases)),
+not the official Savage Wind game releases. Only published `portable-vX.Y.Z`
+releases with an exact `SavageWind-Portable-x86_64.AppImage` filename, an
+official GitHub asset SHA-256 and an expected size are accepted. Unversioned
+`portable-preview` releases are ignored.
+
+The AppImage includes `launcher-version.json` containing the source commit
+and, for tagged releases, its portable version. For an older launcher without
+packaged metadata, the updater recognizes a published image by SHA-256.
+Newer development previews are compared against the latest release commit
+before any update prompt: they are **never silently downgraded**. Unknown
+local builds are left untouched rather than assigned invented versions.
+
+When a newer portable launcher is available, the **same native Qt/GTK update
+dialog** shows a brief linked changelog, defaults to **No**, and offers
+**Don't ask anymore**. Declining without the checkbox repeats the question
+on subsequent launches. Opt-out is stored separately under the `launcher`
+key in `.sw-wrapper/update-prefs.json`; it does not disable updates to the
+official game, test branch or selected PRs.
+
+On acceptance, the new launcher AppImage is downloaded into the same portable
+directory, checked against the GitHub asset size and SHA-256, and atomically
+replaces **only the currently running portable launcher file**. The previous
+image is retained as `.sw-wrapper/launcher-previous.AppImage` for recovery,
+and the installed update is recorded in `.sw-wrapper/launcher.json`.
+If validation or installation fails, the original file stays available and
+gameplay/setup may continue. `root/`, `game/`, saves, native code, and the
+Savage Wind game AppImages are never overwritten by this self-updater.
+
+The already running launcher continues the current operation; the updated
+launcher code takes effect **on the next launch**. No GUI window is shown
+solely for a silent update check when no newer release exists.
+
 ## Native recompilation and progress
 
 The upstream application performs its own native game-code compilation. The wrapper monitors the upstream process and its `root/.gamebuild/` work files for generated code, modules and compiled objects, while preserving the official toolchain and output.
