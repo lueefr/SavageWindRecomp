@@ -271,6 +271,33 @@ class ManagerTests(unittest.TestCase):
                 swmm.prepare(root, environ=env, sync_global=True)
             self.assertIn('storage_dir: "' + str(old) + '"', config.read_text())
             self.assertTrue((old / "mods/first.bnp").is_file())
+            (old / "overlay/Actor").mkdir(parents=True)
+            (old / "overlay/Actor/patched.bin").write_bytes(b"patch")
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": configroot}):
+                self.assertEqual(swmm.overlay(root), old / "overlay")
+                actual = core.portable_env(root, base={"HOME": "/user"}, play=True)
+            self.assertEqual(actual["SAVAGEWIND_ROMFS_OVERLAY"], str(old / "overlay"))
+
+    def test_global_swmm_created_when_missing(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as configroot:
+            root = Path(folder)
+            (root / "root/romfs").mkdir(parents=True)
+            image = root / "SavageWind-Portable-x86_64.AppImage"
+            image.write_bytes(binary())
+            manager = root / "official-swmm"
+            manager.write_bytes(binary())
+            manager.chmod(0o755)
+            env = {"APPIMAGE": str(image), "XDG_CONFIG_HOME": configroot,
+                   "XDG_DATA_HOME": str(Path(configroot) / "data")}
+            with mock.patch.object(swmm, "installed", return_value=manager), \
+                 mock.patch.object(swmm, "managed", return_value=None):
+                swmm.prepare(root, environ=env, sync_global=True)
+            config = Path(configroot) / "SWMM/settings.yml"
+            self.assertTrue(config.is_file())
+            self.assertIn(str(swmm.folder(root) / "bridge/savagewind"),
+                          config.read_text())
+            self.assertEqual((swmm.folder(root) / "global-settings-before-sync.yml").read_text(),
+                             "")
 
     def test_global_swmm_config_for_another_game_is_left_unchanged(self):
         with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as configroot:
