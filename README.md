@@ -1,4 +1,4 @@
-# Savage Wind Portable
+
 
 **A Linux-native, self-contained launcher for [Savage Wind Recomp](https://github.com/Revivedx/SavageWindRecomp).** This independent fork focuses on installing, updating, and running the upstream game from one portable folder without changing the official game distribution.
 
