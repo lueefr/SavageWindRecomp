@@ -2,7 +2,7 @@
 
 **A Linux-native, self-contained launcher for [Savage Wind Recomp](https://github.com/Revivedx/SavageWindRecomp).** This independent fork focuses on installing, updating, and running the upstream game from one portable folder without changing the official game distribution.
 
-> **Upstream:** [Revivedx/SavageWindRecomp](https://github.com/Revivedx/SavageWindRecomp) — original game recompilation, engine, assets tooling, and official releases. This launcher is an independent community project, not an official upstream release.
+> **Upstream:** [Revivedx/SavageWindRecomp](https://github.com/Revivedx/SavageWindRecomp) — original game recompilation, engine, assets tooling, and official releases.
 
 ## Download
 
