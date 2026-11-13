@@ -5,7 +5,8 @@ HERE=$(dirname "$(readlink -f "$0")")
 SAVAGEWIND_WRAPPER_BINDIR="$HERE/usr/bin"
 # The same trusted CA bundle is used by the bundled Qt Python and host GTK Python.
 SAVAGEWIND_CA_BUNDLE="$HERE/usr/share/wrapper/ca-bundle.pem"
-export SAVAGEWIND_WRAPPER_BINDIR SAVAGEWIND_CA_BUNDLE
+SAVAGEWIND_LAUNCHER_METADATA="$HERE/usr/share/wrapper/launcher-version.json"
+export SAVAGEWIND_WRAPPER_BINDIR SAVAGEWIND_CA_BUNDLE SAVAGEWIND_LAUNCHER_METADATA
 DESKTOP=$(printf '%s' "$XDG_CURRENT_DESKTOP" | tr '[:upper:]' '[:lower:]')
 
 # GNOME uses GTK when its GObject bindings are present on the host.

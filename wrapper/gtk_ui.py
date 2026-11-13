@@ -1,4 +1,5 @@
 """Native GTK setup/progress UI, respecting the GNOME/Adwaita theme."""
+import os
 import queue
 import threading
 from pathlib import Path
@@ -14,6 +15,7 @@ from .i18n import LANGUAGES, get_language, set_language, tr, progress_text
 from .pr_build import open_prs
 from .updates import localized
 from .pause import PauseControl
+from . import swmm
 
 
 class Window(Gtk.Window):
@@ -180,6 +182,10 @@ class Window(Gtk.Window):
         self.label(self.native_button, "Recompile game code", "set_label")
         self.native_button.connect("clicked", self.recompile_game)
         mode_actions.pack_start(self.native_button, True, True, 0)
+        self.mod_button = Gtk.Button()
+        self.label(self.mod_button, "Manage Mods", "set_label")
+        self.mod_button.connect("clicked", self.manage_mods)
+        mode_actions.pack_start(self.mod_button, True, True, 0)
         self.delete_button = Gtk.Button()
         self.label(self.delete_button, "Delete installation", "set_label")
         self.delete_button.connect("clicked", self.delete_installation)
@@ -199,7 +205,7 @@ class Window(Gtk.Window):
         self.progress_box.pack_start(self.eta, False, False, 0)
         self.step_names = ["Storage", "Game files", "Updates", "Recompilation", "Launch game"]
         self.source_steps = ["Fetch sources", "Apply pull requests", "Prepare compiler",
-                             "Compile runtime", "Package AppImage", "Publish AppImage"]
+                             "Compile runtime", "Build dependencies and package AppImage", "Publish AppImage"]
         self._source_mode = False
         self.step_labels = []
         for name in range(max(len(self.step_names), len(self.source_steps))):
@@ -382,6 +388,7 @@ class Window(Gtk.Window):
         self.play_button.set_sensitive(existing and bool(runtime) and compiled_code(self.root))
         self.native_button.set_visible(existing and bool(runtime))
         self.build_button.set_visible(bool(runtime))
+        self.mod_button.set_sensitive(valid_game(self.root / "root") and not self.running)
         if existing:
             where = self.root / ("root" if valid_game(self.root / "root") else "extracted")
             self.source.set_text(str(where))
@@ -401,6 +408,26 @@ class Window(Gtk.Window):
                else "AppImage missing — setup required.", self.language))
         self.delete_button.set_sensitive(any((self.root / p).exists() for p in
             ("root", "game", "extracted", "SavageWind-official.AppImage", "SavageWind-custom.AppImage", "SavageWind-test.AppImage")))
+
+    def manage_mods(self, *_):
+        if self.running:
+            return
+        if not valid_game(self.root / "root"):
+            self.alert(tr("Install the game files before managing mods.", self.language))
+            return
+        if swmm.installed(self.root) is None:
+            if self.alert(tr(
+                "Download and install the verified SWMM release into portable storage?",
+                self.language), question=True):
+                self.start(None, mode="swmm_install")
+            return
+        self.open_mods()
+
+    def open_mods(self):
+        try:
+            swmm.launch(self.root, launcher=os.environ.get("APPIMAGE"))
+        except (InstallError, OSError) as error:
+            self.alert(str(error))
 
     def delete_installation(self, *_):
         if self.running:
@@ -604,8 +631,9 @@ class Window(Gtk.Window):
         self.cancel_event = threading.Event()
         self.pause_control = PauseControl()
         self.cancel_event.pause = self.pause_control
-        self.form.hide()
-        self.progress_box.show_all()
+        if mode != "launcher_check":
+            self.form.hide()
+            self.progress_box.show_all()
         self.back_button.hide()
         self.log_expander.set_expanded(False)
         self.cancel_button.set_sensitive(True)
@@ -706,6 +734,8 @@ class Window(Gtk.Window):
                     self.bar.pulse()
                 else:
                     self.bar.set_fraction(float(fraction) / 100)
+            elif event[0] == "launcher-error":
+                self.alert(event[1])
             elif event[0] == "update-question":
                 _, info, answer, gate = event
                 try:
@@ -750,6 +780,14 @@ class Window(Gtk.Window):
                     self.bar.set_fraction(1.0)
                     self.stage.set_text(tr("AppImage build completed." if event[1] == "built"
                                            else "Game code recompilation completed.", self.language))
+                elif event[1] == "swmm-installed":
+                    self.show_all()
+                    self.progress_box.hide()
+                    self.form.show_all()
+                    self.custom_toggled()
+                    self.test_toggled()
+                    self.game_status()
+                    self.open_mods()
                 elif event[1] == "setup":
                     self.show_all()
                     self.progress_box.hide()
@@ -798,8 +836,7 @@ def run(root, selftest=False, autoplay=True):
         window.test_toggled()
         window.game_status()
         window.progress_box.hide()
-        if (autoplay and not installed_runtime(root, read_state(root))
-                and not untracked_appimage(root)):
-            GLib.idle_add(window.prompt_initial_source)
+        if autoplay:
+            GLib.idle_add(lambda: window.start(None, mode="launcher_check") or False)
     Gtk.main()
     return 0

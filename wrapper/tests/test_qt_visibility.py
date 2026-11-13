@@ -58,11 +58,15 @@ class HiddenLauncherTests(unittest.TestCase):
     def test_new_install_shows_form(self):
         with tempfile.TemporaryDirectory() as folder:
             QTimer.singleShot(0, self.app.quit)
-            with mock.patch.object(qt_ui.Window, "prompt_initial_source", autospec=True):
+            # UI-only tests must not leave an asynchronous update worker writing
+            # into a temporary directory after QApplication returns.
+            with mock.patch.object(qt_ui.Window, "start", autospec=True) as start:
                 with mock.patch.object(qt_ui.Window, "show", autospec=True) as show:
                     result = qt_ui.run(Path(folder), autoplay=True)
             self.assertEqual(result, 0)
             show.assert_called_once()
+            start.assert_called_once()
+            self.assertEqual(start.call_args.kwargs.get("mode"), "launcher_check")
 
     def test_initial_chooser_defaults_to_official_and_starts_install_flow(self):
         with tempfile.TemporaryDirectory() as folder:

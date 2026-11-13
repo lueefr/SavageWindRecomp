@@ -89,6 +89,15 @@ def portable_env(root, base=None, play=False):
     if play:
         # The recompilation output is stored apart from the original exefs/romfs.
         env["SAVAGEWIND_GAME_LIB"] = str(data / "swgame.so")
+        # On normal launches do not inherit an unrelated system/session SWMM
+        # overlay. Prefer only this portable installation's deployed mod files.
+        # SWMM's own Play button retains its explicit overlay/on-off choice.
+        if "SWMM_LAUNCHED" not in env:
+            env.pop("SAVAGEWIND_ROMFS_OVERLAY", None)
+            from .swmm import overlay
+            candidate = overlay(root)
+            if candidate is not None:
+                env["SAVAGEWIND_ROMFS_OVERLAY"] = str(candidate)
     return env
 
 
@@ -399,7 +408,7 @@ def reset_install(root, confirmation):
                     continue
                 targets.append(child)
         for child in metadata.iterdir():
-            if child.name not in ("gui.json", "update-prefs.json", "runtime-history.json", "operation.lock"):
+            if child.name not in ("gui.json", "update-prefs.json", "runtime-history.json", "operation.lock", "swmm"):
                 targets.append(child)
         # Check every affected location before making any destructive changes.
         for target in targets:
@@ -1104,7 +1113,8 @@ class Pipeline:
         self.emit, self.ask, self.cancel = emit, ask, cancel
         self.prs = prs  # None: preserve runtime; []: official; "test": upstream test; list: PRs
         self.ask_update = ask_update
-        if mode not in ("install", "build_only", "play", "native", "startup"):
+        if mode not in ("install", "build_only", "play", "native", "startup",
+                        "launcher_check", "swmm_install"):
             raise ValueError("Invalid portable installer operation")
         self.mode = mode
         self._last_progress = 0.0
@@ -1130,7 +1140,55 @@ class Pipeline:
             self._last_log = now
         self.emit(kind, message, fraction)
 
+    def check_launcher(self):
+        """The portable launcher's releases are distinct from game runtime updates."""
+        from .updates import suppress, suppressed
+        from .launcher_updates import check, install
+
+        if suppressed(self.root, "launcher"):
+            return
+        try:
+            update = check(self.root)
+        except Exception as error:
+            self.status("log", f"Launcher update check unavailable: {error}", None)
+            return
+        if update is None:
+            return
+        if self.ask_update is not None:
+            accepted, stop_asking = self.ask_update(update)
+        else:
+            accepted, stop_asking = self.ask(
+                "A new portable launcher is available. Update now?"), False
+        if stop_asking:
+            suppress(self.root, "launcher")
+        if not accepted:
+            self.status("log", "Portable launcher update declined.", None)
+            return
+        self.status("reveal", "Updating the portable launcher...", None)
+        try:
+            install(self.root, update, self.status, self.cancel)
+            self.status("log", "The portable launcher will use the new version "
+                        "when started next time.", None)
+        except Cancelled:
+            raise
+        except Exception as error:
+            # A failed self-update must not prevent an existing game from starting.
+            self.status("log", f"Portable launcher update failed: {error}", None)
+            self.emit("launcher-error", str(error), None)
+
+    def sync_swmm(self):
+        """Silently prepare installed SWMM even when the installer GUI stays hidden."""
+        from .swmm import prepare
+        try:
+            prepared = prepare(self.root, sync_global=True)
+            if prepared is not None:
+                self.status("log", "Existing SWMM detected; portable mod paths and "
+                            "application-menu shortcut are ready.", None)
+        except (InstallError, OSError) as error:
+            self.status("log", f"Optional SWMM setup could not complete: {error}", None)
+
     def launch_existing(self, root, installed):
+        self.sync_swmm()
         self.status("stage", "Iniciando o Savage Wind...")
         with (root / ".sw-wrapper/game.log").open("ab") as logfile:
             process = subprocess.Popen([str(installed), "--play", str(game_files(root))],
@@ -1452,6 +1510,17 @@ class Pipeline:
         if (root / ".sw-wrapper").is_symlink():
             raise InstallError("A pasta .sw-wrapper não pode ser um link simbólico.")
         (root / ".sw-wrapper").mkdir(exist_ok=True)
+        # This runs on an ordinary AppImage launch, not only with --config.
+        # No network calls and no SWMM GUI; absent managers are ignored.
+        self.sync_swmm()
+        if self.mode == "swmm_install":
+            from .swmm import install
+            install(root, self.status, self.cancel)
+            return "swmm-installed"
+        if self.mode in ("startup", "launcher_check"):
+            self.check_launcher()
+        if self.mode == "launcher_check":
+            return "setup"
         if self.mode == "build_only":
             result = self.build_source_only()
             if result != "built":
@@ -1489,6 +1558,7 @@ class Pipeline:
                 state["ignored_legacy"] = str(legacy)
                 write_state(root, state)
         portable_env(root)
+        self.sync_swmm()
         state = read_state(root)
         if self.mode == "startup":
             if not installed_runtime(root, state) and untracked_appimage(root):

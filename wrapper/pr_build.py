@@ -114,7 +114,7 @@ def test_runtime(root, state):
 
 
 SOURCE_STAGES = ("Fetch sources", "Apply pull requests", "Prepare compiler",
-                 "Compile runtime", "Package AppImage", "Publish AppImage")
+                 "Compile runtime", "Build dependencies and package AppImage", "Publish AppImage")
 
 
 def elapsed_text(seconds):
@@ -136,6 +136,7 @@ class SourceTimer:
         self.phase_started = self.started
         self.durations = {}
         self.last_tick = 0.0
+        self.activity = None
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             previous = data.get(mode, {})
@@ -153,6 +154,10 @@ class SourceTimer:
         self.phase_started = now
         self.emit("source-step", SOURCE_STAGES[index], index)
         self.tick(force=True)
+
+    def set_activity(self, description):
+        """Report an observed packaging substep without inventing a percentage."""
+        self.activity = description
 
     def tick(self, force=False):
         if self.current < 0:
@@ -176,7 +181,10 @@ class SourceTimer:
             eta = f"ETA preliminar: ~{elapsed_text(remaining)} (pode variar)"
         else:
             eta = "ETA: calculando..."
-        self.emit("source-eta", f"Decorrido: {elapsed_text(spent)} · {eta}", None)
+        details = f"Decorrido: {elapsed_text(spent)} · {eta}"
+        if self.current == 4 and self.activity:
+            details += "\n" + self.activity
+        self.emit("source-eta", details, None)
 
     def finish(self):
         if self.current >= 0:
@@ -211,6 +219,45 @@ class SourceTimer:
         self.emit("source-eta", f"Concluído em {elapsed_text(self.clock() - self.started)} · ETA: 0s", None)
 
 
+def _package_detail(line):
+    """Recognize observable upstream activity, not guessed completion percentages."""
+    lower = line.lower()
+    if "appimagetool" in lower or "creating filesystem" in lower or "mksquashfs" in lower:
+        return "Creating the AppImage filesystem"
+    if "shaderc" in lower or "glslang" in lower or "spirv-tools" in lower:
+        return "Building shaderc and SPIR-V dependencies"
+    if "ffmpeg" in lower or "libavcodec" in lower:
+        return "Building FFmpeg dependencies"
+    if "sdl3" in lower or "libsdl" in lower:
+        return "Building SDL3 dependencies"
+    if "fetch_zig" in lower or "zig-linux" in lower:
+        return "Fetching the Zig toolchain"
+    if "savagewind" in lower and ("clang" in lower or "make " in lower):
+        return "Compiling the Savage Wind executable"
+    if "ninja" in lower or "cmake" in lower or "building" in lower:
+        return "Compiling native dependencies"
+    return None
+
+
+def _process_states(pid):
+    """Small, bounded /proc snapshot; permissions may hide container processes."""
+    pending, seen, counts = [pid], set(), {}
+    while pending and len(seen) < 96:
+        child = pending.pop()
+        if child in seen:
+            continue
+        seen.add(child)
+        try:
+            stat = Path(f"/proc/{child}/stat").read_text()
+            state = stat.rsplit(")", 1)[-1].split()[0]
+            counts[state] = counts.get(state, 0) + 1
+            direct = Path(f"/proc/{child}/task/{child}/children").read_text()
+            pending.extend(int(value) for value in direct.split())
+        except (OSError, ValueError, IndexError):
+            continue
+    return ", ".join(f"{key}:{value}" for key, value in sorted(counts.items())) or "unavailable"
+
+
 def _run(argv, cwd, emit, cancel, logfile, meter=None):
     """Stream build output without executing build scripts on the host."""
     check_cancel(cancel)
@@ -233,6 +280,13 @@ def _run(argv, cwd, emit, cancel, logfile, meter=None):
             raise
     pending = bytearray()
     recent = []
+    clock = pause.clock if pause is not None else time.monotonic
+    last_output = clock()
+    last_notice = last_output
+    last_flush = last_output
+    packaging = meter is not None and meter.current == 4
+    if packaging:
+        meter.set_activity("Preparing dependencies and packaging the AppImage")
     try:
         with selectors.DefaultSelector() as sel:
             sel.register(process.stdout, selectors.EVENT_READ)
@@ -244,6 +298,8 @@ def _run(argv, cwd, emit, cancel, logfile, meter=None):
                     meter.tick()
                 for key, _ in sel.select(timeout=0.3):
                     data = os.read(key.fd, 16384)
+                    if data:
+                        last_output = clock()
                     if not data:
                         sel.unregister(key.fileobj)
                         continue
@@ -258,7 +314,37 @@ def _run(argv, cwd, emit, cancel, logfile, meter=None):
                         recent.append(line)
                         if len(recent) > 16:
                             recent.pop(0)
+                        if packaging:
+                            detail = _package_detail(line)
+                            if detail and detail != meter.activity:
+                                meter.set_activity(detail)
+                                meter.tick(force=True)
                         emit("log", line, None)
+                now = clock()
+                if now - last_flush >= 2:
+                    logfile.flush()
+                    last_flush = now
+                silent = now - last_output
+                if packaging and silent >= 30 and now - last_notice >= 30:
+                    state = _process_states(process.pid)
+                    message = (f"Packaging still running: no new output for "
+                               f"{elapsed_text(silent)}; process {process.pid}; "
+                               f"states {state}. This is not a completion percentage.")
+                    emit("log", message, None)
+                    logfile.write("[wrapper] " + message + "\n")
+                    logfile.flush()
+                    meter.set_activity(f"No new output for {elapsed_text(silent)} · "
+                                       f"Process states: {state}")
+                    meter.tick(force=True)
+                    last_notice = now
+                if process.poll() is not None and silent > 5 and sel.get_map():
+                    # A detached compiler may inherit stdout after Podman exits.
+                    # Do not wait forever for a pipe held open by another process.
+                    message = ("Build command exited, but its output pipe remained "
+                               "open. Checking the command exit status.")
+                    emit("log", message, None)
+                    logfile.write("[wrapper] " + message + "\n")
+                    break
         if pending:
             logfile.write(pending.decode("utf-8", "replace")[:1200] + "\n")
         status = process.wait()

@@ -74,6 +74,42 @@ first releases the frozen process groups and then proceeds through normal
 cancellation and cleanup. Progress indicators remain frozen while paused.
 The game itself is not suspended by this control.
 
+## Automatic updates for the portable launcher itself
+
+The launcher independently checks **versioned releases of this fork**
+([lueefr/SavageWindRecomp](https://github.com/lueefr/SavageWindRecomp/releases)),
+not the official Savage Wind game releases. Only published `portable-vX.Y.Z`
+releases with an exact `SavageWind-Portable-x86_64.AppImage` filename, an
+official GitHub asset SHA-256 and an expected size are accepted. Unversioned
+`portable-preview` releases are ignored.
+
+The AppImage includes `launcher-version.json` containing the source commit
+and, for tagged releases, its portable version. For an older launcher without
+packaged metadata, the updater recognizes a published image by SHA-256.
+Newer development previews are compared against the latest release commit
+before any update prompt: they are **never silently downgraded**. Unknown
+local builds are left untouched rather than assigned invented versions.
+
+When a newer portable launcher is available, the **same native Qt/GTK update
+dialog** shows a brief linked changelog, defaults to **No**, and offers
+**Don't ask anymore**. Declining without the checkbox repeats the question
+on subsequent launches. Opt-out is stored separately under the `launcher`
+key in `.sw-wrapper/update-prefs.json`; it does not disable updates to the
+official game, test branch or selected PRs.
+
+On acceptance, the new launcher AppImage is downloaded into the same portable
+directory, checked against the GitHub asset size and SHA-256, and atomically
+replaces **only the currently running portable launcher file**. The previous
+image is retained as `.sw-wrapper/launcher-previous.AppImage` for recovery,
+and the installed update is recorded in `.sw-wrapper/launcher.json`.
+If validation or installation fails, the original file stays available and
+gameplay/setup may continue. `root/`, `game/`, saves, native code, and the
+Savage Wind game AppImages are never overwritten by this self-updater.
+
+The already running launcher continues the current operation; the updated
+launcher code takes effect **on the next launch**. No GUI window is shown
+solely for a silent update check when no newer release exists.
+
 ## Native recompilation and progress
 
 The upstream application performs its own native game-code compilation. The wrapper monitors the upstream process and its `root/.gamebuild/` work files for generated code, modules and compiled objects, while preserving the official toolchain and output.
@@ -85,6 +121,87 @@ A completed native build can be reused if the official version, CPU target and o
 Diagnostics are saved under `.sw-wrapper/`, including `build.log` and `import.log`. The GUI displays new stages without endlessly appending duplicate progress messages. Cancellation stops import or compilation subprocesses and cleans incomplete temporary work.
 
 The previous official version and compiled artifacts can be retained for rollback when updates fail. Saves and settings are not part of that replacement.
+
+## Diagnosing long AppImage packaging stages
+
+In the upstream `test` and PR source-build paths, the stage formerly labelled
+"Package AppImage" runs `tools/linux/package.sh`. That script also downloads
+and builds pinned SDL3, FFmpeg and shaderc dependencies, compiles the Savage Wind
+executable, fetches Zig and finally runs appimagetool. A long period in this
+stage does not necessarily mean the squashfs assembly itself has stalled.
+
+The launcher now calls this **Build dependencies and package AppImage**. When
+upstream output identifies a subtask, it displays the observed subtask without
+inventing a completion percentage. If a packaging subprocess stops emitting
+output for 30 seconds, the status and the corresponding
+`.sw-wrapper/test-build.log` or `pr-build.log` report its silence duration,
+PID and available Linux process states, with further notices at 30-second
+intervals. Log data is flushed regularly so it can be inspected while building.
+A completed parent process no longer waits indefinitely when a detached child
+still holds the inherited stdout pipe open. This is a diagnostic aid, not
+proof of forward progress; if no computation is occurring, examine the log and
+cancel or resume the build as appropriate.
+
+## SWMM: automatic mod manager integration
+
+The portable launcher also recognizes an already installed **official SWMM**
+([ustruct/SWMM](https://github.com/ustruct/SWMM)). Supported installations
+include the upstream install-script location `~/.local/share/swmm/swmm`,
+an executable on `PATH`, and the optional SWMM archive installed inside the
+portable launcher itself. **No network access or shell installer is needed**
+for detection, and an existing system SWMM installation is never overwritten.
+
+When the portable launcher starts normally and `root/romfs` is available,
+it silently prepares:
+
+- `.sw-wrapper/swmm/bridge/extracted` → a symlink to the portable `root/`,
+  preserving the user's decompiled game files in their original location
+- `.sw-wrapper/swmm/bridge/savagewind` → a small executable shim to the
+  portable AppImage's `--mods-play` entry point, so SWMM's own **Play** button
+  still uses the portable game's saves, configuration and compiled code
+- A per-installation SWMM config and storage folder (with the stock
+  `savage_wind.executable` and `storage_dir` fields populated). Installed
+  SWMM stores its profiles, mods and generated overlay here rather than in
+  the user's unrelated system-wide SWMM profile
+- The convenient **Savage Wind Portable - Mods** application-menu entry
+  (`savagewind-portable-mods-<id>.desktop`) and a
+  `SavageWind-Mods.desktop` shortcut beside the portable AppImage
+
+Open **Savage Wind Portable - Mods** in the KDE/GNOME application menu, or
+open the desktop shortcut beside the AppImage, to use the unmodified official
+SWMM UI. No `--config` flag or installer window is needed. The normal
+Savage Wind AppImage keeps starting the game directly. The optional
+**Manage Mods** button in the installer is a secondary entry point.
+
+Opening the **original official SWMM** launcher directly is supported too.
+The portable launcher now synchronizes the official SWMM
+`~/.config/SWMM/settings.yml` (or `$XDG_CONFIG_HOME/SWMM/settings.yml`)
+only when its game executable is unset or already points to an AppImage in
+this portable game's folder. Its executable then points to the dummy
+`.sw-wrapper/swmm/bridge/savagewind`, whose parent contains the
+`extracted -> root/` link. This prevents the official SWMM from falling back
+to `~/.local/share/savagewind/extracted/romfs`. The original settings file is
+backed up to `.sw-wrapper/swmm/global-settings-before-sync.yml` exactly once;
+unrelated preferences, profiles and mods are preserved. If the previous
+global mod library is populated, it stays active and its overlay is also
+recognized by the portable game instead of silently hiding those mods.
+A SWMM instance already running when this synchronization occurs must be
+restarted to reload its changed settings. Configuration for another game is
+never overwritten.
+
+The SWMM-generated overlay is kept separate from `root/`, `game/` and the
+game's save files. If the SWMM profile has deployed files, the portable game
+receives their path through `SAVAGEWIND_ROMFS_OVERLAY` on startup. When
+SWMM starts the game, its explicit overlay/on-off environment takes priority.
+Removing the game installation preserves the SWMM profile and mods.
+
+In addition to the optional application-menu shortcut, the integration may
+adjust the two game-related fields in the *official* SWMM config to make the
+stock SWMM menu entry work directly. All game files remain in `root/` and
+`game/`; new isolated SWMM profiles/overlays live in the portable directory.
+A preexisting populated global mod library remains in place and is not
+silently copied or deleted. SWMM itself may still perform its native Linux
+session-environment or Steam-shortcut actions when mods are deployed.
 
 ## Requirements and limitations
 

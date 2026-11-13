@@ -71,6 +71,9 @@ jobs:
           test -s squashfs-root/usr/share/wrapper/updates.py
           test -s squashfs-root/usr/share/wrapper/runtime_tracking.py
           test -s squashfs-root/usr/share/wrapper/pause.py
+          test -s squashfs-root/usr/share/wrapper/launcher_updates.py
+          test -s squashfs-root/usr/share/wrapper/swmm.py
+          test -s squashfs-root/usr/share/wrapper/launcher-version.json
           test -x squashfs-root/usr/bin/swqt/swqt
 
       - name: Smoke test packaged installer without bundled build tools
